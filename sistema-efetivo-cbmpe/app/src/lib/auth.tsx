@@ -1,11 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { definirAutorExportacao } from './util';
 
 export type Papel = 'ADMIN' | 'DGP' | 'LEITOR_GERAL' | 'GESTOR' | 'LEITOR';
 export type Contexto = {
   id: string; email: string; nome: string | null; posto: string | null; matricula: string | null;
-  papel: Papel; ativo: boolean; pode_ver_saude: boolean; deve_trocar_senha: boolean;
+  papel: Papel; ativo: boolean; pode_ver_saude: boolean; deve_trocar_senha: boolean; termo_pendente: number | null;
   omes: { id: number; sigla: string }[];
 };
 
@@ -45,6 +46,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) { console.error(error); setCtx(null); }
     else {
       setCtx(data as Contexto);
+      const c = data as Contexto;
+      definirAutorExportacao([c?.posto, c?.nome].filter(Boolean).join(' ') || c?.email || '');
       supabase.rpc('registrar_acesso').then(() => {});
     }
     setCarregando(false);

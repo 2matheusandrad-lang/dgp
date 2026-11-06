@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { useDominios } from '../lib/dominios';
-import { buscarTodos, exportarXlsx, fmtData, hojeISO, msgErro, somaDias } from '../lib/util';
+import { buscarTodos, fmtData, hojeISO, msgErro, somaDias } from '../lib/util';
+import Exportar from '../components/Exportar';
+import { Sei } from './Militar';
 import { Abas, Aviso, Badge, Botao, Campo, Carregando, Tabela } from '../components/ui';
 
 export default function Afastamentos() {
   const { escopo, ctx } = useAuth();
   const dom = useDominios();
   const nav = useNavigate();
-  const [aba, setAba] = useState('curso');
+  const [params] = useSearchParams();
+  const [aba, setAba] = useState(params.get('aba') || 'curso');
   const [tipo, setTipo] = useState('');
+  const [exp, setExp] = useState(false);
+  useEffect(() => {
+    const cod = params.get('tipo');
+    if (cod && dom) setTipo(String(dom.tiposAfast.find((t) => t.codigo === cod)?.id || ''));
+  }, [params, dom]);
   const [ini, setIni] = useState(somaDias(hojeISO(), -30));
   const [fim, setFim] = useState(hojeISO());
   const [dados, setDados] = useState<any[] | null>(null);
@@ -34,28 +42,14 @@ export default function Afastamentos() {
   }, [escopo, aba, ini, fim, hoje]);
 
   const linhas = useMemo(() => (dados || []).filter((a) => !tipo || String(a.tipo_id) === tipo), [dados, tipo]);
-  const saude = !!ctx?.pode_ver_saude;
-
-  const exportar = () => exportarXlsx('afastamentos', `Afastamentos — ${{ curso: 'em curso', previstos: 'previstos', retornos: 'retornos em 15 dias', periodo: `${fmtData(ini)} a ${fmtData(fim)}` }[aba]}`, [
-    { titulo: 'Posto/Grad.', valor: (r: any) => r.posto_completo },
-    { titulo: 'Matrícula', valor: (r: any) => r.matricula },
-    { titulo: 'Nome', valor: (r: any) => r.nome, largura: 40 },
-    { titulo: 'OME', valor: (r: any) => r.ome_sigla },
-    { titulo: 'Seção', valor: (r: any) => r.secao_nome, largura: 22 },
-    { titulo: 'Tipo', valor: (r: any) => r.tipo_nome, largura: 30 },
-    { titulo: 'Início', valor: (r: any) => fmtData(r.data_inicio) },
-    { titulo: 'Dias', valor: (r: any) => r.dias },
-    { titulo: 'Término', valor: (r: any) => fmtData(r.data_fim) },
-    { titulo: 'Status', valor: (r: any) => r.status },
-    ...(saude ? [{ titulo: 'Natureza', valor: (r: any) => r.natureza }, { titulo: 'CID', valor: (r: any) => r.cid }] : []),
-    { titulo: 'Processo SEI', valor: (r: any) => r.processo_sei, largura: 28 },
-  ], linhas);
+  const nomeEscopo = escopo ? ctx?.omes.find((o) => o.id === escopo)?.sigla : 'Todas as OMEs';
+  const rotuloAba: Record<string, string> = { curso: 'em curso hoje', previstos: 'previstos', retornos: 'retornos em até 15 dias', periodo: `de ${fmtData(ini)} a ${fmtData(fim)}` };
 
   return (
     <div className="pagina">
       <div className="pagina-cab">
         <div><h1>Afastamentos</h1><p className="sub">{dados ? `${linhas.length} registros` : 'Carregando…'}</p></div>
-        <div className="acoes"><Botao onClick={exportar} disabled={!linhas.length}>Exportar Excel</Botao></div>
+        <div className="acoes"><Botao onClick={() => setExp(true)} disabled={!linhas.length}>Exportar Excel / PDF</Botao></div>
       </div>
       <Abas ativa={aba} onChange={setAba} abas={[
         { id: 'curso', rotulo: 'Em curso hoje' }, { id: 'retornos', rotulo: 'Retornos em até 15 dias' },
@@ -86,9 +80,25 @@ export default function Afastamentos() {
             { id: 'dias', titulo: 'Dias' },
             { id: 'data_fim', titulo: 'Término', render: (r: any) => <>{fmtData(r.data_fim)}{r.status === 'EM CURSO' && <span className="nota"> ({r.dias_restantes}d)</span>}</> },
             { id: 'status', titulo: 'Status', render: (r: any) => <Badge tom={r.status === 'EM CURSO' ? 'amarelo' : r.status === 'PREVISTO' ? 'azul' : 'neutro'}>{r.status.toLowerCase()}</Badge> },
-            { id: 'processo_sei', titulo: 'Processo SEI' },
+            { id: 'processo_sei', titulo: 'Processo SEI', render: (r: any) => <Sei p={r.processo_sei} /> },
           ]} />
       )}
+      <Exportar aberto={exp} onFechar={() => setExp(false)} arquivo="afastamentos" titulo={`Afastamentos ${rotuloAba[aba]}`} subtitulo={nomeEscopo || ''}
+        qtd={linhas.length} obterLinhas={async () => [...linhas].sort((a: any, b: any) => a.posto_ordem - b.posto_ordem || a.nome.localeCompare(b.nome))}
+        agrupamentos={[{ id: 'ome', rotulo: 'OME', fn: (r) => r.ome_sigla }, { id: 'tipo', rotulo: 'Tipo de afastamento', fn: (r) => r.tipo_nome }]}
+        colunas={[
+          { id: 'posto', titulo: 'Posto/Grad.', valor: (r: any) => r.posto_completo, padrao: true },
+          { id: 'mat', titulo: 'Matrícula', valor: (r: any) => r.matricula, padrao: true },
+          { id: 'nome', titulo: 'Nome', valor: (r: any) => r.nome, largura: 40, padrao: true },
+          { id: 'ome', titulo: 'OME', valor: (r: any) => r.ome_sigla, padrao: true },
+          { id: 'secao', titulo: 'Seção', valor: (r: any) => r.secao_nome, largura: 22 },
+          { id: 'tipo', titulo: 'Tipo', valor: (r: any) => r.tipo_nome, largura: 30, padrao: true },
+          { id: 'ini', titulo: 'Início', valor: (r: any) => fmtData(r.data_inicio), padrao: true },
+          { id: 'dias', titulo: 'Dias', valor: (r: any) => r.dias, padrao: true },
+          { id: 'fim', titulo: 'Término', valor: (r: any) => fmtData(r.data_fim), padrao: true },
+          { id: 'status', titulo: 'Status', valor: (r: any) => r.status },
+          { id: 'sei', titulo: 'Processo SEI', valor: (r: any) => r.processo_sei, largura: 28, padrao: true },
+        ]} />
     </div>
   );
 }

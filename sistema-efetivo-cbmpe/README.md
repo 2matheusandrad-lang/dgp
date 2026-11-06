@@ -27,7 +27,10 @@ Substitui a "Planilha de Controle de Pessoal" (uma aba por OME + aba GERAL) por 
 
 ```
 netlify.toml           configuração de publicação no Netlify
-supabase/migrations/   4 scripts SQL (estrutura, segurança/RLS, views e funções, tabelas de domínio)
+supabase/migrations/   scripts SQL: 4 da versão 1.0 + 20261110000000_fase1.sql (1.1) + 20261201000000_versao_1_2.sql (1.2)
+supabase/reverter_1_2.sql    desfaz a versão 1.2 (volta à 1.1)
+supabase/reverter_fase1.sql  desfaz a versão 1.1 (volta à 1.0 sem perder dados da 1.0)
+scripts/backup.bat     backup do banco com pg_dump (Windows)
 supabase/functions/    admin-usuarios: cria usuários e redefine senhas (só ADMIN)
 importacao/            importar_planilha.py: converte a planilha atual em carga para o banco
 app/                   interface web (React + Vite + supabase-js)
@@ -132,7 +135,7 @@ A tela de Administração cria usuários e redefine senhas por meio de uma peque
 4. Clique em **Deploy function** e aguarde de 10 a 30 segundos.
 5. Mantenha ligada a opção de verificação de JWT ("Enforce JWT verification" / "Verify JWT"), que já vem ligada por padrão. Só usuário logado consegue chamar a função, e o código ainda confere se é ADMIN.
 
-Não é preciso cadastrar segredos: `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` são injetados automaticamente pelo Supabase.
+`SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` são injetados automaticamente pelo Supabase. A partir da versão 1.2, cadastre também o segredo **`ORIGENS_PERMITIDAS`** (*Edge Functions > Secrets*) com o endereço do site, por exemplo `https://efetivo-dgp.netlify.app` (vários endereços separados por vírgula). Assim a função só aceita chamadas vindas do site oficial. Sem o segredo ela continua funcionando, mas aceita qualquer origem.
 
 **Opção B: pela linha de comando (recomendada se o código ficar no GitHub)**
 Requer Node.js 20 ou superior (nodejs.org). No Prompt de Comando, na pasta do projeto:
@@ -264,6 +267,10 @@ Em **Administração > Usuários e acessos > + Novo usuário**: e-mail (de prefe
 - Banco hospedado em São Paulo; acesso por HTTPS; senhas com no mínimo 10 caracteres; senha provisória trocada no 1º acesso.
 - Toda inclusão, alteração e exclusão fica na tabela `auditoria`, com o usuário e o conteúdo antes/depois.
 - Exclusão definitiva só pelo ADMIN. Para saída do efetivo use **Desligar** (o histórico é preservado).
+- **Termo de responsabilidade:** desde a 1.2, todo usuário aceita o termo vigente antes de entrar; uma nova versão (Administração > Termo de uso) exige novo aceite de todos.
+- **Senha provisória:** o banco guarda a "impressão" da senha provisória e só libera o acesso quando ela muda de fato.
+- **Exportações registradas:** todo Excel/PDF sai com a marca "uso interno, LGPD" e o nome de quem gerou, e fica em Histórico > Exportações.
+- **Cabeçalhos de segurança** (`netlify.toml`): CSP restrita ao próprio site e ao Supabase, HSTS, bloqueio de iframe, Permissions-Policy.
 - **Backup:** confira os planos vigentes do Supabase. Os planos pagos incluem backups diários automáticos, e projetos do plano gratuito podem ser pausados por inatividade. Para uso oficial, use um plano pago ou exporte com `pg_dump` periodicamente.
 
 ## 9. Testes realizados
@@ -271,3 +278,47 @@ Em **Administração > Usuários e acessos > + Novo usuário**: e-mail (de prefe
 - Migrations executadas em PostgreSQL 16, com a carga real (2.507 militares, 184 afastamentos, 2.306 formações).
 - Testes de permissão: gestor não insere nem vê militar de outra OME; não muda OME por edição direta; não grava CID sem permissão; não se promove a ADMIN; leitor não edita; usuário bloqueado não vê nada; transferência e recebimento exigem documento.
 - Interface testada no navegador contra o banco real: login, painel, efetivo, ficha, lançamento de afastamento, histórico, entrega mensal, relatórios, criação de usuário e recebimento de militar transferido, em desktop e celular.
+
+## 10. Versão 1.1 (Fase 1)
+
+Atualização incremental e sem apagar dados: `supabase/migrations/20261110000000_fase1.sql` roda numa transação (ou aplica tudo, ou nada) e registra a versão na tabela `versao_sistema`. Se for executado duas vezes, para com a mensagem "versão 1.1 já aplicada". Quem está na 1.0 aplica a 1.1 e a 1.2 em seguida, na mesma janela de manutenção (ver seção 11 e o "Guia da atualização").
+
+| Área | O que entrou |
+|---|---|
+| Desempenho | Regras de acesso (RLS) reescritas e índices novos: lista de todas as OMEs de ~1,7 s para ~40 ms no banco; painel de ~2 s para ~70 ms; telas guardam os dados em cache e só recarregam o que mudou |
+| Efetivo | Filtros na URL (link compartilhável), atalhos com contagem, resumo do resultado, seleção com ações em lote (seção, atividade, afastamento, conferido), edição direta na tabela, exportação Excel/PDF com escolha de colunas e agrupamento, ficha individual em PDF |
+| Conferência mensal | Lista "conferido" por militar com progresso, comparação com o mês anterior, planilha da OME para baixar, preencher e reenviar com prévia antes de gravar; a entrega mensal exige 100% conferido ou justificativa |
+| QOD | Previsto × existente × pronto por OME e posto (QOC/QOA opcional), claros, histórico mensal, importação por planilha, edição em grade e impacto do QOD ao transferir |
+| Desligamentos | Só a DGP registra (motivo da lista, publicação BG/DOE ou SEI obrigatória); OMEs comunicam por pedido que a DGP efetiva ou devolve; agregação e cessão viram tipos de afastamento (não desligam) |
+| Alertas | Sino com pendências por perfil, dentro do sistema |
+| Indicadores e boletim | Disponibilidade, cobertura do QOD, prontidão, taxa de afastamento, qualidade cadastral e pontualidade, cada um com ficha de definição; boletim mensal em PDF |
+| Segurança (LGPD) | Natureza/CID só por consulta registrada: cada visualização ou gravação fica em "Histórico > Acessos a dados de saúde" (visível ao ADMIN) |
+| QOD e almanaque em PDF | Tela "QOD e almanaque" (DGP): o QOD do mês e os 3 volumes do almanaque são lidos no navegador (pdf.js), sem guardar o arquivo; o QOD tem somas e total conferidos antes de gravar; o almanaque atualiza posto (com confirmação), quadro, antiguidade, ano de ingresso e nome de guerra, e lista quem está sem cadastro ou fora do almanaque. Novas OMEs CG, SCG e CPP |
+| Operação | Busca rápida Ctrl+K, processo SEI clicável (opcional, `VITE_SEI_PESQUISA`), quadro resumo separando QOC/QOA, origem "planilha" na auditoria, rotina de backup (`scripts/backup.bat`) |
+
+**Reverter:** `supabase/reverter_fase1.sql` desfaz as mudanças de estrutura (dados lançados nas tabelas novas da 1.1 são perdidos; os da 1.0 ficam) e, no Netlify, publica-se de novo o deploy anterior.
+
+**Testes da 1.1:** migração aplicada, revertida e reaplicada sobre a carga real (2.507 militares); testes SQL por perfil (RLS, conferência, lote, desligamento por pedido, log de saúde, QOD, boletim, pendências); 24 fluxos testados no navegador (gestor, DGP, admin e leitor), sem erros no console, incluindo ida e volta da planilha da OME, importação de QOD e geração dos PDFs.
+
+## 11. Versão 1.2 (segurança + Férias/PAF)
+
+Aplicada logo depois da 1.1, na mesma manutenção: `supabase/migrations/20261201000000_versao_1_2.sql`. Exige a 1.1, roda numa transação e se recusa a rodar duas vezes.
+
+| Área | O que entrou |
+|---|---|
+| Termo de uso | Aceite obrigatório no primeiro acesso e a cada nova versão; o ADMIN publica versões novas |
+| Senha provisória | Acesso só depois da troca real da senha (conferida no banco, não só na tela) |
+| Campos oficiais | Posto, quadro, nome, matrícula, antiguidade e data de ingresso só mudam pela DGP (ou pelo almanaque); a OME usa "Pedir correção à DGP", que a DGP aplica ou devolve em "Desligamentos e pedidos > Correções cadastrais" |
+| Data de ingresso | Nova, vinda do almanaque (data de praça); o ano de ingresso passa a ser calculado dela |
+| Exportações | Marca LGPD e registro de cada arquivo gerado (Histórico > Exportações) |
+| Auditoria | Varredura de CID/saúde escrito em texto livre; acessos por OME |
+| Férias (PAF) | Módulo novo pela Portaria do CG nº 312/2025: exercícios (gozo de 01/12/N a 31/12/N+1), proposta da OME (30 dias ou 2 × 15, início no dia 1º ou 16), limite de 10% por mês por OME (órgãos de ensino fora), períodos restritos, 12 meses de serviço, acúmulo, reprogramação a pedido/de ofício (60 dias)/obrigatória e interrupção, exceções decididas pelo Diretor da DGP, homologação, publicação e marcação de inserção no SGP |
+| Férias = afastamento | Cada período programado vira afastamento "Férias" sozinho; férias não se lançam mais como afastamento avulso |
+| Servidores civis | Cadastro simples, só para o PAF |
+| Importação do PAF | A planilha do PAF é lida no navegador e gravada uma única vez (histórico); exercícios com erro de digitação são marcados e podem ficar de fora |
+| Ajuda | Página de ajuda por perfil |
+| Celular | Tabelas viram cartões em telas estreitas |
+
+**Reverter:** `supabase/reverter_1_2.sql` volta à 1.1 (os dados de férias, civis, termo e pedidos de correção são perdidos; o resto fica). Para voltar à 1.0, rode em seguida `supabase/reverter_fase1.sql`.
+
+**Testes da 1.2:** 1.1 + 1.2 aplicadas, revertidas e reaplicadas sobre a carga real; testes SQL de segurança (troca de senha, termo, campos oficiais, exportações, permissões) e de todas as regras da Portaria 312; importação da planilha real do PAF (6.659 períodos lidos, cerca de 6.200 gravados em segundos, ~450 de matrículas sem cadastro listadas para conferência); fluxo completo no navegador (importar, abrir exercício, restrição, proposta com exceção, reprogramação, homologação, SGP, pedido de correção, novo termo, celular) e os 24 fluxos da 1.1, sem erros de console e com a CSP ativa.

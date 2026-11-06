@@ -1,15 +1,16 @@
+import { useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { useDominios, Dominios } from '../lib/dominios';
 import {
-  ATIVIDADE, Coluna, REGISTRO_TIPO, SITUACAO, buscarTodos, exportarXlsx, fmtCompetencia, fmtData, hojeISO,
+  ATIVIDADE, Coluna, REGISTRO_TIPO, SITUACAO, buscarTodos, exportarPdf, exportarXlsx, fmtCompetencia, fmtData, hojeISO,
   msgErro, ordenarAntiguidade, semAcento, somaDias,
 } from '../lib/util';
 import { TIPO_MOV } from './Militar';
 import { Aviso, Botao, Campo, Carregando, Vazio } from '../components/ui';
 
-type Params = { ini: string; fim: string; nivel: string; area: string; tipoReg: string; competencia: string; tipoAfast: string };
+type Params = { ini: string; fim: string; nivel: string; area: string; tipoReg: string; competencia: string; tipoAfast: string; quadro: string };
 type Resultado = { titulo: string; colunas: Coluna[]; linhas: any[]; agrupar?: (r: any) => string };
 type Rel = { id: string; titulo: string; descricao: string; params: (keyof Params)[]; gerar: (p: Params, escopo: number | null, dom: Dominios) => Promise<Resultado> };
 
@@ -41,9 +42,17 @@ const RELATORIOS: Rel[] = [
     },
   },
   {
-    id: 'quadro', titulo: 'Quadro resumo (OME × posto/graduação)', descricao: 'Quantitativo por posto/graduação em cada OME (ou seção, quando uma OME está selecionada), com afastados do dia.', params: [],
-    gerar: async (_p, escopo, dom) => {
-      const l = await buscarTodos(() => escopoQ(supabase.from('v_militar').select('ome_id,ome_sigla,secao_nome,posto_sigla,afastado_hoje,atividade').eq('situacao', 'ATIVO').order('id'), escopo));
+    id: 'quadro', titulo: 'Quadro resumo (OME × posto/graduação)', descricao: 'Quantitativo por posto/graduação em cada OME (ou seção, quando uma OME está selecionada), com afastados do dia. Pode separar oficiais por quadro (QOC/QOA).', params: ['quadro'],
+    gerar: async (p, escopo, dom) => {
+      const lb = await buscarTodos(() => escopoQ(supabase.from('v_militar').select('ome_id,ome_sigla,secao_nome,posto_sigla,quadro_sigla,afastado_hoje,atividade').eq('situacao', 'ATIVO').order('id'), escopo));
+      const sepQ = p.quadro === '1';
+      const l = lb.map((r: any) => ({ ...r, posto_sigla: sepQ && r.quadro_sigla ? `${r.posto_sigla} ${r.quadro_sigla}` : r.posto_sigla }));
+      const colsPosto: string[] = [];
+      dom.postos.forEach((x) => {
+        const qs = sepQ ? [...new Set(l.filter((r: any) => r.posto_sigla.startsWith(x.sigla + ' ')).map((r: any) => r.posto_sigla))].sort() : [];
+        if (qs.length) colsPosto.push(...qs);
+        if (!qs.length || l.some((r: any) => r.posto_sigla === x.sigla)) colsPosto.push(x.sigla);
+      });
       const chave = (r: any) => (escopo ? r.secao_nome || '(sem seção)' : r.ome_sigla);
       const grupos = new Map<string, any>();
       for (const r of l) {
@@ -61,7 +70,7 @@ const RELATORIOS: Rel[] = [
       return {
         titulo: 'Quadro resumo do efetivo', linhas,
         colunas: [{ titulo: escopo ? 'Seção' : 'OME', valor: (r) => r.unidade, largura: 22 },
-          ...dom.postos.map((p) => ({ titulo: p.sigla, valor: (r: any) => r[p.sigla] || 0, largura: 7 })),
+          ...colsPosto.map((c) => ({ titulo: c, valor: (r: any) => r[c] || 0, largura: 7 })),
           { titulo: 'Total', valor: (r) => r.total, largura: 8 }, { titulo: 'Operac.', valor: (r) => r.operacional, largura: 8 },
           { titulo: 'Afastados hoje', valor: (r) => r.afastados, largura: 10 },
           { titulo: 'Disponíveis', valor: (r) => r.total - r.afastados, largura: 10 }],
@@ -188,8 +197,9 @@ const RELATORIOS: Rel[] = [
 export default function Relatorios() {
   const { escopo, ctx } = useAuth();
   const dom = useDominios();
-  const [sel, setSel] = useState<Rel>(RELATORIOS[0]);
-  const [p, setP] = useState<Params>({ ini: somaDias(hojeISO(), -30), fim: hojeISO(), nivel: '', area: '', tipoReg: '', competencia: '', tipoAfast: '' });
+  const [params] = useSearchParams();
+  const [sel, setSel] = useState<Rel>(RELATORIOS.find((r) => r.id === params.get('r')) || RELATORIOS[0]);
+  const [p, setP] = useState<Params>({ ini: somaDias(hojeISO(), -30), fim: hojeISO(), nivel: '', area: '', tipoReg: '', competencia: '', tipoAfast: '', quadro: '' });
   const [res, setRes] = useState<Resultado | null>(null);
   const [gerando, setGerando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -237,6 +247,7 @@ export default function Relatorios() {
                 </select></Campo>
               )}
               {sel.params.includes('area') && <Campo rotulo="Área contém"><input value={p.area} onChange={(e) => set('area', e.target.value)} placeholder="ex.: engenharia civil" /></Campo>}
+              {sel.params.includes('quadro') && <label className="check"><input type="checkbox" checked={p.quadro === '1'} onChange={(e) => set('quadro', e.target.checked ? '1' : '')} /> Separar oficiais por quadro (QOC/QOA)</label>}
               {sel.params.includes('competencia') && (
                 <Campo rotulo="Competência"><select value={p.competencia} onChange={(e) => set('competencia', e.target.value)}>
                   <option value="">Selecione</option>{comps.map((c) => <option key={c.competencia} value={c.competencia}>{fmtCompetencia(c.competencia)} ({c.total} militares)</option>)}
@@ -245,8 +256,9 @@ export default function Relatorios() {
             </div>}
             <div className="acoes">
               <Botao variante="primario" onClick={gerar} disabled={gerando || !dom}>{gerando ? 'Gerando…' : 'Gerar'}</Botao>
-              {res && <Botao onClick={() => exportarXlsx(sel.id, `${res.titulo} — ${nomeEscopo}`, res.colunas, res.linhas)}>Exportar Excel</Botao>}
-              {res && <Botao onClick={() => window.print()}>Imprimir / PDF</Botao>}
+              {res && <Botao onClick={() => exportarXlsx(sel.id, `${res.titulo} — ${nomeEscopo}`, res.colunas, res.linhas, res.agrupar)}>Excel</Botao>}
+              {res && <Botao onClick={() => exportarPdf(sel.id, res.titulo, nomeEscopo || '', res.colunas, res.linhas, res.agrupar, sel.id === 'nominal' || sel.id === 'quadro')}>PDF</Botao>}
+              {res && <Botao variante="fantasma" onClick={() => window.print()}>Imprimir</Botao>}
             </div>
           </div></div>
 

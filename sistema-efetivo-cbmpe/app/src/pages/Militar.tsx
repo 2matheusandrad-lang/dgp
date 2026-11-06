@@ -4,13 +4,16 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { useDominios, secoesDa, Dominios } from '../lib/dominios';
 import {
-  ATIVIDADE, REGISTRO_TIPO, SITUACAO, fmtData, fmtDataHora, hojeISO, mascaraMatricula, mascaraTelefone,
+  ATIVIDADE, REGISTRO_TIPO, SITUACAO, fmtData, fmtDataHora, hojeISO, linkSei, mascaraMatricula, mascaraTelefone,
   matriculaValida, msgErro, rpc, somaDias,
 } from '../lib/util';
+import { invalidar } from '../lib/consulta';
+import DesligamentoModal from '../components/Desligamento';
 import { diferencas, NOME_OPERACAO, NOME_TABELA } from '../lib/auditoria';
 import { Abas, Aviso, Badge, Botao, Campo, Carregando, Confirmar, Modal, Tabela, useToast } from '../components/ui';
 import CrudFilho from '../components/CrudFilho';
 import { Completude, marcadores, situacaoHoje } from './Efetivo';
+import { FeriasMilitar } from './Ferias';
 
 export default function Militar() {
   const { id } = useParams();
@@ -22,7 +25,9 @@ export default function Militar() {
   const [m, setM] = useState<any>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [aba, setAba] = useState('dados');
-  const [modal, setModal] = useState<'' | 'transferir' | 'desligar' | 'reincluir' | 'excluir'>('');
+  const [modal, setModal] = useState<'' | 'transferir' | 'reincluir' | 'excluir'>('');
+  const [desligar, setDesligar] = useState(false);
+  const [gerandoFicha, setGerandoFicha] = useState(false);
 
   const carregar = useCallback(async () => {
     if (novo) { setM({}); return; }
@@ -32,6 +37,18 @@ export default function Militar() {
     else setM(data);
   }, [id, novo]);
   useEffect(() => { setM(null); setErro(null); setAba('dados'); carregar(); }, [carregar]);
+  const mudou = useCallback(() => { carregar(); ['efetivo', 'painel', 'pendencias', 'conferencia', 'ind', 'qod'].forEach(invalidar); }, [carregar]);
+
+  const fichaPdf = async () => {
+    setGerandoFicha(true);
+    try {
+      const q = (v: string, ordem: string) => supabase.from(v).select('*').eq('militar_id', m.id).order(ordem);
+      const [a, r, f, i, mv, p] = await Promise.all([q('v_afastamento', 'data_inicio'), q('v_registro_funcional', 'criado_em'), q('v_formacao', 'nivel_ordem'),
+        q('militar_idioma', 'idioma'), q('v_movimentacao', 'data'), q('v_punicao', 'data_inicio')]);
+      const { pdfFicha } = await import('../lib/pdf');
+      pdfFicha(m, a.data || [], r.data || [], f.data || [], i.data || [], mv.data || [], p.error ? null : p.data || []);
+    } catch (e) { toast(msgErro(e), 'erro'); } finally { setGerandoFicha(false); }
+  };
 
   if (erro) return <div className="pagina"><Aviso tom="erro">{erro}</Aviso><Botao onClick={() => nav('/efetivo')}>Voltar ao efetivo</Botao></div>;
   if (!m || !dom) return <Carregando />;
@@ -53,7 +70,8 @@ export default function Militar() {
         {!novo && (
           <div className="acoes">
             {m.situacao === 'ATIVO' && podeEditarOme(m.ome_id) && <Botao onClick={() => setModal('transferir')}>Transferir</Botao>}
-            {m.situacao === 'ATIVO' && podeEditarOme(m.ome_id) && <Botao onClick={() => setModal('desligar')}>Desligar do efetivo</Botao>}
+            {m.situacao === 'ATIVO' && podeEditarOme(m.ome_id) && <Botao onClick={() => setDesligar(true)}>{gestaoGlobal ? 'Registrar desligamento' : 'Comunicar desligamento'}</Botao>}
+            <Botao onClick={fichaPdf} disabled={gerandoFicha}>{gerandoFicha ? 'Gerando…' : 'Ficha em PDF'}</Botao>
             {m.situacao !== 'ATIVO' && gestaoGlobal && <Botao onClick={() => setModal('reincluir')}>Reincluir</Botao>}
             {admin && <Botao variante="perigo" onClick={() => setModal('excluir')}>Excluir cadastro</Botao>}
           </div>
@@ -64,19 +82,22 @@ export default function Militar() {
         <Abas ativa={aba} onChange={setAba} abas={[
           { id: 'dados', rotulo: 'Dados' }, { id: 'afast', rotulo: 'Afastamentos' }, { id: 'situacoes', rotulo: 'Situações funcionais' },
           { id: 'formacao', rotulo: 'Formação e idiomas' }, { id: 'punicoes', rotulo: 'Punições' },
-          { id: 'mov', rotulo: 'Movimentações' }, { id: 'hist', rotulo: 'Histórico' },
+          { id: 'ferias', rotulo: 'Férias' }, { id: 'mov', rotulo: 'Movimentações' }, { id: 'hist', rotulo: 'Histórico' },
         ]} />
       )}
 
-      {aba === 'dados' && <DadosMilitar m={m} novo={novo} editavel={editavel} dom={dom} onSalvo={(nid) => { toast('Ficha salva.'); novo ? nav(`/militar/${nid}`, { replace: true }) : carregar(); }} />}
-      {aba === 'afast' && <AfastamentosMilitar m={m} editavel={editavel} dom={dom} onMudou={carregar} />}
-      {aba === 'situacoes' && <SituacoesMilitar m={m} editavel={editavel} onMudou={carregar} />}
-      {aba === 'formacao' && <FormacaoMilitar m={m} editavel={editavel} dom={dom} onMudou={carregar} />}
-      {aba === 'punicoes' && <PunicoesMilitar m={m} editavel={editavel} dom={dom} onMudou={carregar} />}
+      {aba === 'dados' && <DadosMilitar m={m} novo={novo} editavel={editavel} dom={dom} onSalvo={(nid) => { toast('Ficha salva.'); ['efetivo', 'painel', 'pendencias', 'conferencia'].forEach(invalidar); novo ? nav(`/militar/${nid}`, { replace: true }) : carregar(); }} />}
+      {aba === 'afast' && <AfastamentosMilitar m={m} editavel={editavel} dom={dom} onMudou={mudou} />}
+      {aba === 'situacoes' && <SituacoesMilitar m={m} editavel={editavel} onMudou={mudou} />}
+      {aba === 'formacao' && <FormacaoMilitar m={m} editavel={editavel} dom={dom} onMudou={mudou} />}
+      {aba === 'punicoes' && <PunicoesMilitar m={m} editavel={editavel} dom={dom} onMudou={mudou} />}
+      {aba === 'ferias' && <FeriasMilitar pessoa={{ militar_id: m.id }} />}
       {aba === 'mov' && <MovimentacoesMilitar m={m} />}
       {aba === 'hist' && <HistoricoMilitar m={m} />}
 
-      {!novo && <AcoesMovimentacao modal={modal} setModal={setModal} m={m} dom={dom} onFeito={carregar} />}
+      {!novo && <AcoesMovimentacao modal={modal} setModal={setModal} m={m} dom={dom} onFeito={mudou} />}
+      {!novo && desligar && <DesligamentoModal militar={m} modo={gestaoGlobal ? 'efetivar' : 'pedido'} onFechar={() => setDesligar(false)}
+        onFeito={() => { setDesligar(false); toast(gestaoGlobal ? 'Desligamento registrado.' : 'Pedido enviado à DGP. Acompanhe em Desligamentos.'); invalidar('deslig'); mudou(); }} />}
     </div>
   );
 }
@@ -112,7 +133,7 @@ function DadosMilitar({ m, novo, editavel, dom, onSalvo }: { m: any; novo: boole
     const dados: any = {
       matricula: f.matricula, nome: f.nome, nome_guerra: f.nome_guerra || null, posto_id: Number(f.posto_id),
       quadro_sigla: posto?.oficial && f.quadro_sigla ? f.quadro_sigla : null, secao_id: f.secao_id ? Number(f.secao_id) : null,
-      atividade: f.atividade || null, ano_ingresso: f.ano_ingresso ? Number(f.ano_ingresso) : null,
+      atividade: f.atividade || null, ano_ingresso: f.ano_ingresso ? Number(f.ano_ingresso) : null, data_ingresso: f.data_ingresso || null,
       ordem_antiguidade: f.ordem_antiguidade === '' || f.ordem_antiguidade === null ? null : Number(f.ordem_antiguidade),
       email: f.email?.trim() || null, telefone1: f.telefone1 || null, telefone2: f.telefone2 || null,
       endereco: f.endereco?.trim() || null, observacoes: f.observacoes?.trim() || null,
@@ -138,6 +159,8 @@ function DadosMilitar({ m, novo, editavel, dom, onSalvo }: { m: any; novo: boole
   };
 
   const dis = !editavel;
+  const oficial = dis || (!novo && !gestaoGlobal);   // posto, quadro, nome, antiguidade e ingresso: só a DGP depois da inclusão
+  const [correcao, setCorrecao] = useState(false);
   return (
     <div className="cartao"><div className="cartao-corpo">
       {!novo && <div className="linha-info"><Completude v={m.completude} pend={m.pendencias} />{m.pendencias?.length > 0 && <span className="nota">Falta preencher: {m.pendencias.join(', ')}</span>}</div>}
@@ -147,17 +170,17 @@ function DadosMilitar({ m, novo, editavel, dom, onSalvo }: { m: any; novo: boole
           <input value={f.matricula} disabled={dis || !novo} onChange={(e) => set('matricula', mascaraMatricula(e.target.value))} placeholder="000000-0" />
         </Campo>
         {onde && <Aviso tom="alerta">Esta matrícula já está cadastrada: {onde.posto} {onde.nome} ({onde.ome}). Use “Receber militar transferido” na tela de Efetivo.</Aviso>}
-        <Campo rotulo="Nome completo *" largura="meia"><input value={f.nome} disabled={dis} onChange={(e) => set('nome', e.target.value)} /></Campo>
+        <Campo rotulo="Nome completo *" largura="meia"><input value={f.nome} disabled={oficial} onChange={(e) => set('nome', e.target.value)} /></Campo>
         <Campo rotulo="Nome de guerra"><input value={f.nome_guerra || ''} disabled={dis} onChange={(e) => set('nome_guerra', e.target.value)} /></Campo>
         <Campo rotulo="Posto/graduação *">
-          <select value={f.posto_id} disabled={dis} onChange={(e) => set('posto_id', e.target.value)}>
+          <select value={f.posto_id} disabled={oficial} onChange={(e) => set('posto_id', e.target.value)}>
             <option value="">Selecione</option>
             {dom.postos.map((p) => <option key={p.id} value={p.id}>{p.sigla} — {p.nome}</option>)}
           </select>
         </Campo>
         {posto?.oficial && (
           <Campo rotulo="Quadro">
-            <select value={f.quadro_sigla} disabled={dis} onChange={(e) => set('quadro_sigla', e.target.value)}>
+            <select value={f.quadro_sigla} disabled={oficial} onChange={(e) => set('quadro_sigla', e.target.value)}>
               <option value="">—</option>
               {dom.quadros.map((q) => <option key={q.sigla} value={q.sigla}>{q.sigla}</option>)}
             </select>
@@ -165,8 +188,16 @@ function DadosMilitar({ m, novo, editavel, dom, onSalvo }: { m: any; novo: boole
         )}
         <Campo rotulo="Ano de ingresso"><input type="number" min={1950} max={2100} value={f.ano_ingresso || ''} disabled={dis} onChange={(e) => set('ano_ingresso', e.target.value)} /></Campo>
         <Campo rotulo="Ordem de antiguidade" dica="Desempate dentro do mesmo posto (menor = mais antigo)">
-          <input type="number" value={f.ordem_antiguidade ?? ''} disabled={dis} onChange={(e) => set('ordem_antiguidade', e.target.value)} />
+          <input type="number" value={f.ordem_antiguidade ?? ''} disabled={oficial} onChange={(e) => set('ordem_antiguidade', e.target.value)} />
         </Campo>
+        <Campo rotulo="Data de ingresso" dica="Data de praça (vem do almanaque)">
+          <input type="date" value={f.data_ingresso || ''} disabled={oficial} onChange={(e) => set('data_ingresso', e.target.value)} />
+        </Campo>
+        {!novo && !gestaoGlobal && editavel && (
+          <div className="campo campo-meia"><span className="campo-rotulo">Dados oficiais</span>
+            <span className="nota">Posto, quadro, nome, antiguidade e data de ingresso são mantidos pela DGP (almanaque).</span>
+            <Botao pequeno onClick={() => setCorrecao(true)}>Pedir correção à DGP</Botao></div>
+        )}
 
         <h4 className="form-secao">Lotação</h4>
         <Campo rotulo="OME *" dica={novo ? undefined : 'Para mudar de OME use “Transferir”.'}>
@@ -201,6 +232,7 @@ function DadosMilitar({ m, novo, editavel, dom, onSalvo }: { m: any; novo: boole
       {erro && <Aviso tom="erro">{erro}</Aviso>}
       {editavel && <div className="form-acoes"><Botao variante="primario" disabled={salvando} onClick={salvar}>{salvando ? 'Salvando…' : novo ? 'Cadastrar militar' : 'Salvar alterações'}</Botao></div>}
       {!editavel && !novo && <p className="nota">Somente leitura.</p>}
+      {correcao && <PedidoCorrecao m={m} dom={dom} onFechar={() => setCorrecao(false)} />}
     </div></div>
   );
 }
@@ -225,17 +257,18 @@ function AfastamentosMilitar({ m, editavel, dom, onMudou }: { m: any; editavel: 
   const saude = !!ctx?.pode_ver_saude;
   return (
     <CrudFilho titulo="Afastamento" linhas={linhas} podeEditar={editavel} recarregar={() => { recarregar(); onMudou(); }}
-      descricao={<span className="nota">O término é calculado automaticamente (início + dias − 1).</span>}
+      podeEditarLinha={(r: any) => !r.ferias_periodo_id} motivoBloqueio="pelo PAF (aba Férias)"
+      descricao={<span className="nota">O término é calculado automaticamente (início + dias − 1). Férias são lançadas no módulo Férias e aparecem aqui sozinhas.</span>}
       colunas={[
         { id: 'tipo_nome', titulo: 'Tipo' },
         { id: 'data_inicio', titulo: 'Início', render: (r) => fmtData(r.data_inicio) },
         { id: 'dias', titulo: 'Dias' },
         { id: 'data_fim', titulo: 'Término', render: (r) => fmtData(r.data_fim) },
         { id: 'status', titulo: 'Status', render: (r) => statusAfast(r.status) },
-        ...(saude ? [{ id: 'natureza', titulo: 'Natureza/CID', render: (r: any) => [r.natureza === 'FISICO' ? 'Físico' : r.natureza === 'MENTAL' ? 'Mental' : '', r.cid].filter(Boolean).join(' · ') }] : []),
-        { id: 'processo_sei', titulo: 'Processo SEI' },
+        ...(saude ? [{ id: 'saude', titulo: 'Saúde', ordenavel: false, render: (r: any) => r.exige_saude ? <VerSaude id={r.id} tem={r.tem_dados_saude} /> : null }] : []),
+        { id: 'processo_sei', titulo: 'Processo SEI', render: (r: any) => <Sei p={r.processo_sei} /> },
       ]}
-      novo={() => ({ tipo_id: '', data_inicio: hojeISO(), dias: 30, processo_sei: '', observacao: '', natureza: '', cid: '' })}
+      novo={() => ({ tipo_id: '', data_inicio: hojeISO(), dias: 30, processo_sei: '', observacao: '', natureza: '', cid: '', _saude: false })}
       form={(v, set) => {
         const tipo = dom.tiposAfast.find((t) => String(t.id) === String(v.tipo_id));
         const fim = v.data_inicio && Number(v.dias) > 0 ? somaDias(v.data_inicio, Number(v.dias) - 1) : '';
@@ -243,7 +276,7 @@ function AfastamentosMilitar({ m, editavel, dom, onMudou }: { m: any; editavel: 
           <Campo rotulo="Tipo *" largura="meia">
             <select value={v.tipo_id} onChange={(e) => set('tipo_id', e.target.value)}>
               <option value="">Selecione</option>
-              {dom.tiposAfast.filter((t) => t.ativo || String(t.id) === String(v.tipo_id)).map((t) => <option key={t.id} value={t.id}>{t.nome}</option>)}
+              {dom.tiposAfast.filter((t) => (t.ativo && t.codigo !== 'FERIAS') || String(t.id) === String(v.tipo_id)).map((t) => <option key={t.id} value={t.id}>{t.nome}</option>)}
             </select>
           </Campo>
           <Campo rotulo="Início *"><input type="date" value={v.data_inicio} onChange={(e) => set('data_inicio', e.target.value)} /></Campo>
@@ -257,16 +290,23 @@ function AfastamentosMilitar({ m, editavel, dom, onMudou }: { m: any; editavel: 
             }} />
           </Campo>
           <Campo rotulo="Processo SEI" largura="meia"><input value={v.processo_sei || ''} onChange={(e) => set('processo_sei', e.target.value)} placeholder="3900000272.000000/2026-00" /></Campo>
-          {tipo?.exige_saude && saude && <>
+          {tipo?.exige_saude && saude && (v.id && !v._saude ? (
+            <div className="campo campo-meia"><span className="campo-rotulo">Natureza / CID</span>
+              <Botao pequeno onClick={async () => {
+                try { const r = await rpc<any[]>('ver_dados_saude', { p_afastamento: v.id }); set('natureza', r?.[0]?.natureza || ''); set('cid', r?.[0]?.cid || ''); set('_saude', true); }
+                catch (e) { set('_erro', msgErro(e)); }
+              }}>Ver / alterar dados de saúde</Botao>
+              <span className="campo-dica">A consulta fica registrada (LGPD).</span></div>
+          ) : <>
             <Campo rotulo="Natureza">
-              <select value={v.natureza || ''} onChange={(e) => set('natureza', e.target.value)}>
+              <select value={v.natureza || ''} onChange={(e) => { set('natureza', e.target.value); set('_saude', true); }}>
                 <option value="">—</option><option value="FISICO">Físico</option><option value="MENTAL">Mental</option>
               </select>
             </Campo>
-            <Campo rotulo="CID" dica="Dado sensível (LGPD)"><input value={v.cid || ''} onChange={(e) => set('cid', e.target.value.toUpperCase())} placeholder="M54.5" /></Campo>
-          </>}
+            <Campo rotulo="CID" dica="Dado sensível (LGPD)"><input value={v.cid || ''} onChange={(e) => { set('cid', e.target.value.toUpperCase()); set('_saude', true); }} placeholder="M54.5" /></Campo>
+          </>)}
           {tipo?.exige_saude && !saude && <Aviso tom="info">Natureza e CID só podem ser registrados por usuários com permissão de saúde.</Aviso>}
-          <Campo rotulo="Observação" largura="inteira"><input value={v.observacao || ''} onChange={(e) => set('observacao', e.target.value)} /></Campo>
+          <Campo rotulo="Observação" largura="inteira" dica="Não registre diagnóstico ou CID aqui (LGPD)."><input value={v.observacao || ''} onChange={(e) => set('observacao', e.target.value)} /></Campo>
         </>;
       }}
       salvar={async (v) => {
@@ -276,13 +316,8 @@ function AfastamentosMilitar({ m, editavel, dom, onMudou }: { m: any; editavel: 
         if (aid) { const { error } = await supabase.from('afastamento').update(dados).eq('id', aid); if (error) throw error; }
         else { const { data, error } = await supabase.from('afastamento').insert(dados).select('id').single(); if (error) throw error; aid = data.id; }
         const tipo = dom.tiposAfast.find((t) => t.id === Number(v.tipo_id));
-        if (saude) {
-          if (tipo?.exige_saude && (v.natureza || v.cid)) {
-            const { error } = await supabase.from('afastamento_saude').upsert({ afastamento_id: aid, natureza: v.natureza || null, cid: v.cid || null });
-            if (error) throw error;
-          } else if (v.id) {
-            await supabase.from('afastamento_saude').delete().eq('afastamento_id', aid);
-          }
+        if (saude && v._saude) {
+          await rpc('salvar_dados_saude', { p_afastamento: aid, p_natureza: tipo?.exige_saude ? v.natureza || null : null, p_cid: tipo?.exige_saude ? v.cid || null : null });
         }
       }}
       excluir={async (r) => { const { error } = await supabase.from('afastamento').delete().eq('id', r.id); if (error) throw error; }}
@@ -484,7 +519,12 @@ function AcoesMovimentacao({ modal, setModal, m, dom, onFeito }: { modal: string
   const [f, setF] = useState<any>({});
   const [erro, setErro] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
-  useEffect(() => { setF({ data: hojeISO(), documento: '', observacao: '', ome: '', secao: '', situacao: 'RESERVA' }); setErro(null); }, [modal]);
+  useEffect(() => { setF({ data: hojeISO(), documento: '', observacao: '', ome: '', secao: '' }); setErro(null); }, [modal]);
+  const [impacto, setImpacto] = useState<any>(null);
+  useEffect(() => {
+    setImpacto(null);
+    if (modal === 'transferir' && f.ome) rpc('qod_impacto', { p_militar: m.id, p_ome_destino: Number(f.ome) }).then(setImpacto).catch(() => setImpacto(null));
+  }, [modal, f.ome, m.id]);
   const set = (k: string, v: any) => setF((x: any) => ({ ...x, [k]: v }));
   const fechar = () => setModal('');
 
@@ -497,10 +537,6 @@ function AcoesMovimentacao({ modal, setModal, m, dom, onFeito }: { modal: string
         toast('Militar transferido.');
         fechar();
         if (!podeEditarOme(Number(f.ome))) { nav('/efetivo'); return; }
-      } else if (modal === 'desligar') {
-        await rpc('desligar_militar', { p_militar: m.id, p_situacao: f.situacao, p_data: f.data, p_documento: f.documento, p_observacao: f.observacao || null });
-        toast('Militar desligado do efetivo ativo.');
-        fechar();
       } else if (modal === 'reincluir') {
         if (!f.ome) throw new Error('Escolha a OME.');
         await rpc('reincluir_militar', { p_militar: m.id, p_ome: Number(f.ome), p_secao: f.secao ? Number(f.secao) : null, p_data: f.data, p_documento: f.documento, p_observacao: f.observacao || null });
@@ -522,7 +558,7 @@ function AcoesMovimentacao({ modal, setModal, m, dom, onFeito }: { modal: string
       }} />;
   }
   if (!modal) return null;
-  const titulo = modal === 'transferir' ? 'Transferir militar' : modal === 'desligar' ? 'Desligar do efetivo ativo' : 'Reincluir militar';
+  const titulo = modal === 'transferir' ? 'Transferir militar' : 'Reincluir militar';
   return (
     <Modal aberto titulo={titulo} onFechar={fechar}
       rodape={<><Botao onClick={fechar}>Cancelar</Botao><Botao variante="primario" disabled={salvando} onClick={executar}>Confirmar</Botao></>}>
@@ -542,18 +578,82 @@ function AcoesMovimentacao({ modal, setModal, m, dom, onFeito }: { modal: string
             </select>
           </Campo>
         </>}
-        {modal === 'desligar' && (
-          <Campo rotulo="Motivo *">
-            <select value={f.situacao} onChange={(e) => set('situacao', e.target.value)}>
-              {Object.entries(SITUACAO).filter(([k]) => k !== 'ATIVO').map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </Campo>
-        )}
         <Campo rotulo="Data *"><input type="date" value={f.data} onChange={(e) => set('data', e.target.value)} /></Campo>
         <Campo rotulo="Documento *" dica="Nº do SP, BG ou processo SEI"><input value={f.documento} onChange={(e) => set('documento', e.target.value)} /></Campo>
         <Campo rotulo="Observação" largura="inteira"><input value={f.observacao} onChange={(e) => set('observacao', e.target.value)} /></Campo>
       </div>
+      {modal === 'transferir' && impacto && !impacto.sem_qod && (
+        <div className="impacto-qod">
+          <strong>Impacto no QOD ({impacto.posto})</strong>
+          {(['origem', 'destino'] as const).map((k) => {
+            const x = impacto[k]; const dif = x.depois - x.previsto;
+            return <div key={k}>{x.sigla}: {x.antes} → <strong>{x.depois}</strong> {x.previsto ? <>(previsto {x.previsto}; <span className={dif < 0 ? 'qod-falta' : dif > 0 ? 'qod-excesso' : 'qod-ok'}>{dif === 0 ? 'completo' : dif < 0 ? `faltam ${-dif}` : `excesso de ${dif}`}</span>)</> : <span className="nota">(sem QOD para este posto)</span>}</div>;
+          })}
+        </div>
+      )}
       {modal === 'transferir' && <Aviso tom="info">Após a transferência, a ficha passa para a OME de destino e sai da sua lista. O histórico acompanha o militar.</Aviso>}
+      {erro && <Aviso tom="erro">{erro}</Aviso>}
+    </Modal>
+  );
+}
+
+// processo SEI: link para a pesquisa (se configurada) ou botão de copiar
+export function Sei({ p }: { p?: string | null }) {
+  const toast = useToast();
+  if (!p) return null;
+  const url = linkSei(p);
+  return (
+    <span className="sei" onClick={(e) => e.stopPropagation()}>
+      {url ? <a href={url} target="_blank" rel="noreferrer">{p}</a> : p}
+      <button className="link" title="Copiar" onClick={() => { navigator.clipboard?.writeText(p); toast('Processo copiado.'); }}>⧉</button>
+    </span>
+  );
+}
+
+function VerSaude({ id, tem }: { id: string; tem: boolean | null }) {
+  const [dados, setDados] = useState<any>(null);
+  const toast = useToast();
+  if (!tem) return <span className="nota">—</span>;
+  if (dados) return <span>{[dados.natureza === 'FISICO' ? 'Físico' : dados.natureza === 'MENTAL' ? 'Mental' : '', dados.cid].filter(Boolean).join(' · ') || '—'}</span>;
+  return <button className="link" onClick={async (e) => {
+    e.stopPropagation();
+    try { const r = await rpc<any[]>('ver_dados_saude', { p_afastamento: id }); setDados(r?.[0] || {}); } catch (er) { toast(msgErro(er), 'erro'); }
+  }} title="A consulta fica registrada">ver</button>;
+}
+
+// =====================================================================
+function PedidoCorrecao({ m, dom, onFechar }: { m: any; dom: Dominios; onFechar: () => void }) {
+  const toast = useToast();
+  const [f, setF] = useState<any>({ posto_id: String(m.posto_id), quadro_sigla: m.quadro_sigla || '', nome: m.nome, matricula: m.matricula,
+    ordem_antiguidade: m.ordem_antiguidade ?? '', data_ingresso: m.data_ingresso || '', justificativa: '' });
+  const [erro, setErro] = useState<string | null>(null);
+  const set = (k: string, v: any) => setF((x: any) => ({ ...x, [k]: v }));
+  const posto = dom.postos.find((p) => String(p.id) === String(f.posto_id));
+  const enviar = async () => {
+    const d: any = {};
+    if (Number(f.posto_id) !== m.posto_id) d.posto_id = Number(f.posto_id);
+    if ((f.quadro_sigla || '') !== (m.quadro_sigla || '')) d.quadro_sigla = f.quadro_sigla;
+    if (f.nome.trim().toUpperCase() !== m.nome) d.nome = f.nome.trim();
+    if (f.matricula !== m.matricula) d.matricula = f.matricula;
+    if (String(f.ordem_antiguidade) !== String(m.ordem_antiguidade ?? '')) d.ordem_antiguidade = f.ordem_antiguidade === '' ? '' : Number(f.ordem_antiguidade);
+    if ((f.data_ingresso || '') !== (m.data_ingresso || '')) d.data_ingresso = f.data_ingresso;
+    if (!Object.keys(d).length) return setErro('Altere ao menos um campo.');
+    try { await rpc('solicitar_correcao', { p_militar: m.id, p_dados: d, p_justificativa: f.justificativa }); toast('Pedido de correção enviado à DGP.'); invalidar('deslig'); onFechar(); }
+    catch (e) { setErro(msgErro(e)); }
+  };
+  return (
+    <Modal aberto titulo="Pedir correção à DGP" onFechar={onFechar}
+      rodape={<><Botao onClick={onFechar}>Cancelar</Botao><Botao variante="primario" onClick={enviar}>Enviar pedido</Botao></>}>
+      <p className="nota">Informe o valor correto. A DGP confere com o almanaque ou a publicação e aplica.</p>
+      <div className="form-grade">
+        <Campo rotulo="Posto/graduação"><select value={f.posto_id} onChange={(e) => set('posto_id', e.target.value)}>{dom.postos.map((p) => <option key={p.id} value={p.id}>{p.sigla}</option>)}</select></Campo>
+        {posto?.oficial && <Campo rotulo="Quadro"><select value={f.quadro_sigla} onChange={(e) => set('quadro_sigla', e.target.value)}><option value="">—</option>{dom.quadros.map((q) => <option key={q.sigla} value={q.sigla}>{q.sigla}</option>)}</select></Campo>}
+        <Campo rotulo="Nome completo" largura="meia"><input value={f.nome} onChange={(e) => set('nome', e.target.value)} /></Campo>
+        <Campo rotulo="Matrícula"><input value={f.matricula} onChange={(e) => set('matricula', mascaraMatricula(e.target.value))} /></Campo>
+        <Campo rotulo="Antiguidade"><input type="number" value={f.ordem_antiguidade} onChange={(e) => set('ordem_antiguidade', e.target.value)} /></Campo>
+        <Campo rotulo="Data de ingresso"><input type="date" value={f.data_ingresso} onChange={(e) => set('data_ingresso', e.target.value)} /></Campo>
+        <Campo rotulo="Justificativa *" largura="inteira" dica="Ex.: promoção publicada no BGE nº 200/2026; almanaque de 15/09"><input value={f.justificativa} onChange={(e) => set('justificativa', e.target.value)} /></Campo>
+      </div>
       {erro && <Aviso tom="erro">{erro}</Aviso>}
     </Modal>
   );

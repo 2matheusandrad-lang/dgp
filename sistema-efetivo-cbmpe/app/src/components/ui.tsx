@@ -102,16 +102,16 @@ export const useToast = () => useContext(ToastCtx);
 
 // ---------------- tabela com ordenação e paginação ----------------
 export type ColTabela<T> = {
-  id: string; titulo: string; render?: (r: T) => ReactNode; valor?: (r: T) => any;
+  id: string; titulo: ReactNode; render?: (r: T) => ReactNode; valor?: (r: T) => any;
   ordenavel?: boolean; className?: string; largura?: string;
 };
-export function Tabela<T>({ colunas, linhas, chave, onLinha, porPagina = 50, vazio = 'Nenhum registro encontrado.', ordemInicial }: {
+export function Tabela<T>({ colunas, linhas, chave, onLinha, porPagina = 50, vazio = 'Nenhum registro encontrado.', ordemInicial, linhaClasse, compacta }: {
   colunas: ColTabela<T>[]; linhas: T[]; chave: (r: T) => string; onLinha?: (r: T) => void; porPagina?: number; vazio?: string;
-  ordemInicial?: { id: string; asc: boolean };
+  ordemInicial?: { id: string; asc: boolean }; linhaClasse?: (r: T) => string; compacta?: boolean;
 }) {
   const [ordem, setOrdem] = useState<{ id: string; asc: boolean } | null>(ordemInicial || null);
   const [pag, setPag] = useState(0);
-  useEffect(() => setPag(0), [linhas]);
+  useEffect(() => setPag(0), [linhas.length]);
   const ordenadas = useMemo(() => {
     if (!ordem) return linhas;
     const c = colunas.find((x) => x.id === ordem.id);
@@ -129,7 +129,7 @@ export function Tabela<T>({ colunas, linhas, chave, onLinha, porPagina = 50, vaz
   if (!linhas.length) return <Vazio>{vazio}</Vazio>;
   return (
     <div className="tabela-wrap">
-      <table className="tabela">
+      <table className={`tabela cartoes ${compacta ? 'compacta' : ''}`}>
         <thead>
           <tr>
             {colunas.map((c) => (
@@ -142,8 +142,8 @@ export function Tabela<T>({ colunas, linhas, chave, onLinha, porPagina = 50, vaz
         </thead>
         <tbody>
           {visiveis.map((r) => (
-            <tr key={chave(r)} onClick={onLinha ? () => onLinha(r) : undefined} className={onLinha ? 'clicavel' : ''}>
-              {colunas.map((c) => <td key={c.id} className={c.className}>{c.render ? c.render(r) : (r as any)[c.id]}</td>)}
+            <tr key={chave(r)} onClick={onLinha ? () => onLinha(r) : undefined} className={`${onLinha ? 'clicavel' : ''} ${linhaClasse ? linhaClasse(r) : ''}`}>
+              {colunas.map((c) => <td key={c.id} className={c.className} data-rotulo={typeof c.titulo === 'string' ? c.titulo : ''}>{c.render ? c.render(r) : (r as any)[c.id]}</td>)}
             </tr>
           ))}
         </tbody>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { recarregarDominios, useDominios } from '../lib/dominios';
+import { invalidar } from '../lib/consulta';
 import { PAPEL, fmtData, fmtDataHora, mascaraMatricula, msgErro, semAcento } from '../lib/util';
 import { Abas, Aviso, Badge, Botao, Campo, Cartao, Carregando, Modal, Tabela, useToast } from '../components/ui';
 
@@ -11,7 +12,8 @@ export default function Admin() {
   const abas = [
     ...(admin ? [{ id: 'usuarios', rotulo: 'Usuários e acessos' }] : []),
     { id: 'omes', rotulo: gestaoGlobal ? 'OMEs e seções' : 'Seções' },
-    ...(gestaoGlobal ? [{ id: 'tabelas', rotulo: 'Tabelas' }] : []),
+    ...(gestaoGlobal ? [{ id: 'tabelas', rotulo: 'Tabelas' }, { id: 'acessos', rotulo: 'Acessos por OME' }] : []),
+    ...(admin ? [{ id: 'termo', rotulo: 'Termo de uso' }] : []),
   ];
   return (
     <div className="pagina">
@@ -20,6 +22,8 @@ export default function Admin() {
       {aba === 'usuarios' && admin && <Usuarios />}
       {aba === 'omes' && <OmesSecoes />}
       {aba === 'tabelas' && gestaoGlobal && <Tabelas />}
+      {aba === 'acessos' && gestaoGlobal && <AcessosOme />}
+      {aba === 'termo' && admin && <TermoAdmin />}
     </div>
   );
 }
@@ -298,6 +302,7 @@ function Tabelas() {
             }}>Adicionar</Botao>
           </div>
         </Cartao>
+        <MotivosDesligamento />
         <Cartao titulo="Quadros de oficiais">
           <div className="chips">{dom.quadros.map((q) => <Badge key={q.sigla}>{q.sigla}</Badge>)}</div>
           <div className="linha-form">
@@ -311,5 +316,85 @@ function Tabelas() {
         </Cartao>
       </div>
     </div>
+  );
+}
+
+function MotivosDesligamento() {
+  const toast = useToast();
+  const [lista, setLista] = useState<any[]>([]);
+  const [novo, setNovo] = useState({ nome: '', situacao: 'RESERVA' });
+  const carregar = () => supabase.from('motivo_desligamento').select('*').order('ordem').then(({ data }) => setLista(data || []));
+  useEffect(() => { carregar(); }, []);
+  const salvar = async (m: any, mud: any) => {
+    const { error } = await supabase.from('motivo_desligamento').update(mud).eq('id', m.id);
+    if (error) toast(msgErro(error), 'erro'); else { carregar(); invalidar('motivos'); }
+  };
+  const SIT: Record<string, string> = { RESERVA: 'Reserva', REFORMA: 'Reforma', FALECIDO: 'Falecido', EXCLUIDO: 'Excluído', OUTRO: 'Outro' };
+  return (
+    <Cartao titulo="Motivos de desligamento">
+      <table className="tabela compacta">
+        <thead><tr><th>Motivo</th><th>Situação final</th><th>Ativo</th></tr></thead>
+        <tbody>{lista.map((m) => (
+          <tr key={m.id}>
+            <td><input defaultValue={m.nome} onBlur={(e) => e.target.value.trim() && e.target.value !== m.nome && salvar(m, { nome: e.target.value.trim() })} /></td>
+            <td><select value={m.situacao} onChange={(e) => salvar(m, { situacao: e.target.value })}>{Object.entries(SIT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></td>
+            <td><input type="checkbox" checked={m.ativo} onChange={(e) => salvar(m, { ativo: e.target.checked })} /></td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <div className="linha-form">
+        <input placeholder="Novo motivo" value={novo.nome} onChange={(e) => setNovo({ ...novo, nome: e.target.value })} />
+        <select value={novo.situacao} onChange={(e) => setNovo({ ...novo, situacao: e.target.value })}>{Object.entries(SIT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        <Botao pequeno onClick={async () => {
+          if (!novo.nome.trim()) return;
+          const { error } = await supabase.from('motivo_desligamento').insert({ nome: novo.nome.trim(), situacao: novo.situacao, ordem: 50 });
+          if (error) toast(msgErro(error), 'erro'); else { setNovo({ nome: '', situacao: 'RESERVA' }); carregar(); invalidar('motivos'); }
+        }}>Adicionar</Botao>
+      </div>
+    </Cartao>
+  );
+}
+
+function AcessosOme() {
+  const [linhas, setLinhas] = useState<any[] | null>(null);
+  useEffect(() => { supabase.rpc('acessos_por_ome').then(({ data }) => setLinhas(data || [])); }, []);
+  if (!linhas) return <Carregando />;
+  const dias = (d?: string | null) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 864e5) : null);
+  return (
+    <Cartao titulo="Acessos por OME">
+      <p className="nota">Os alertas ficam dentro do sistema: OME sem acesso recente não vê as pendências. Em ordem do acesso mais antigo.</p>
+      <Tabela linhas={linhas} chave={(r: any) => String(r.ome_id)} porPagina={60} colunas={[
+        { id: 'ome_sigla', titulo: 'OME' }, { id: 'efetivo', titulo: 'Efetivo' },
+        { id: 'usuarios', titulo: 'Usuários ativos', render: (r: any) => (r.usuarios ? r.usuarios : <Badge tom="vermelho">nenhum</Badge>) },
+        { id: 'editores', titulo: 'Gestores' },
+        { id: 'ultimo_acesso', titulo: 'Último acesso', render: (r: any) => { const d = dias(r.ultimo_acesso); return r.ultimo_acesso ? <>{new Date(r.ultimo_acesso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} {d! > 15 && <Badge tom="amarelo">{d} dias</Badge>}</> : <Badge tom="vermelho">nunca</Badge>; } },
+      ]} />
+    </Cartao>
+  );
+}
+
+function TermoAdmin() {
+  const toast = useToast();
+  const { recarregar } = useAuth();
+  const [atual, setAtual] = useState<any>(null);
+  const [texto, setTexto] = useState('');
+  const [aceites, setAceites] = useState<number | null>(null);
+  const carregar = useCallback(async () => {
+    const { data } = await supabase.from('termo_uso').select('*').order('versao', { ascending: false }).limit(1);
+    setAtual(data?.[0] || null); setTexto(data?.[0]?.texto || '');
+    if (data?.[0]) { const { count } = await supabase.from('termo_aceite').select('*', { count: 'exact', head: true }).eq('versao', data[0].versao); setAceites(count ?? 0); }
+  }, []);
+  useEffect(() => { carregar(); }, [carregar]);
+  return (
+    <Cartao titulo={`Termo de responsabilidade e uso${atual ? ` · versão ${atual.versao}` : ''}`}>
+      <p className="nota">{atual ? `Vigente desde ${new Date(atual.vigente_desde).toLocaleDateString('pt-BR')} · ${aceites ?? '…'} aceite(s).` : ''} Publicar uma nova versão obriga todos os usuários a aceitar de novo no próximo acesso.</p>
+      <textarea rows={16} className="largura-total" value={texto} onChange={(e) => setTexto(e.target.value)} />
+      <div className="form-acoes"><Botao variante="primario" disabled={!texto.trim() || texto === atual?.texto} onClick={async () => {
+        if (!confirm('Publicar nova versão do termo? Todos terão de aceitar de novo.')) return;
+        const { error } = await supabase.from('termo_uso').insert({ versao: (atual?.versao || 0) + 1, texto });
+        if (error) return toast(msgErro(error), 'erro');
+        toast('Nova versão publicada.'); recarregar();
+      }}>Publicar nova versão</Botao></div>
+    </Cartao>
   );
 }

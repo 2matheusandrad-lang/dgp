@@ -3,18 +3,26 @@
 // A chave service_role fica só no servidor (variável SUPABASE_SERVICE_ROLE_KEY, já injetada pelo Supabase).
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 
-const cors = {
-  'Access-Control-Allow-Origin': '*',
+// Origens permitidas: segredo ORIGENS_PERMITIDAS no Supabase (ex.: https://efetivo-cbmpe.netlify.app).
+// Sem o segredo, aceita qualquer origem (comportamento antigo), mas continua exigindo login de ADMIN.
+const ORIGENS = (Deno.env.get('ORIGENS_PERMITIDAS') || '').split(',').map((s) => s.trim().replace(/\/$/, '')).filter(Boolean);
+let cors: Record<string, string> = {};
+const montarCors = (origem: string | null) => ({
+  'Access-Control-Allow-Origin': !ORIGENS.length ? '*' : origem && ORIGENS.includes(origem) ? origem : ORIGENS[0],
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
+  'Vary': 'Origin',
+});
 const resp = (corpo: unknown, status = 200) =>
   new Response(JSON.stringify(corpo), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const PAPEIS = ['ADMIN', 'DGP', 'LEITOR_GERAL', 'GESTOR', 'LEITOR'];
 
 Deno.serve(async (req) => {
+  const origem = req.headers.get('Origin');
+  cors = montarCors(origem);
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (ORIGENS.length && origem && !ORIGENS.includes(origem.replace(/\/$/, ''))) return resp({ erro: 'Origem não permitida.' }, 403);
   try {
     const url = Deno.env.get('SUPABASE_URL')!;
     const servico = createClient(url, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
@@ -52,6 +60,8 @@ Deno.serve(async (req) => {
         const { error: e3 } = await servico.from('perfil_ome').insert(omes.map((o) => ({ perfil_id: novo.user.id, ome_id: o })));
         if (e3) return resp({ erro: e3.message }, 400);
       }
+      // guarda a "impressão digital" da senha provisória: o banco só libera o acesso quando ela for trocada de fato
+      await servico.rpc('registrar_senha_provisoria', { p_id: novo.user.id });
       return resp({ ok: true, id: novo.user.id });
     }
 
@@ -61,6 +71,7 @@ Deno.serve(async (req) => {
       const { error } = await servico.auth.admin.updateUserById(String(corpo.id), { password: senha });
       if (error) return resp({ erro: error.message }, 400);
       await servico.from('perfil').update({ deve_trocar_senha: true }).eq('id', corpo.id);
+      await servico.rpc('registrar_senha_provisoria', { p_id: String(corpo.id) });
       return resp({ ok: true });
     }
 

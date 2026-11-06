@@ -13,6 +13,7 @@ export type Dominios = {
 };
 
 let cache: Promise<Dominios> | null = null;
+let ultimo: Dominios | null = null;   // já carregado: componentes novos nascem com os dados (sem render vazio)
 const ouvintes = new Set<(d: Dominios) => void>();
 
 async function carregar(): Promise<Dominios> {
@@ -25,7 +26,8 @@ async function carregar(): Promise<Dominios> {
     sel('ome', 'ordem'), sel('secao', 'ordem'), sel('posto_graduacao', 'ordem'), sel('quadro', 'sigla'),
     sel('tipo_afastamento', 'ordem'), sel('nivel_escolaridade', 'ordem'), sel('tipo_punicao', 'ordem'),
   ]);
-  return { omes, secoes, postos, quadros, tiposAfast, niveis, tiposPun };
+  ultimo = { omes, secoes, postos, quadros, tiposAfast, niveis, tiposPun };
+  return ultimo;
 }
 
 export function recarregarDominios() {
@@ -34,10 +36,10 @@ export function recarregarDominios() {
   return cache;
 }
 
-export function limparDominios() { cache = null; }
+export function limparDominios() { cache = null; ultimo = null; }
 
 export function useDominios() {
-  const [dom, setDom] = useState<Dominios | null>(null);
+  const [dom, setDom] = useState<Dominios | null>(ultimo);
   useEffect(() => {
     if (!cache) cache = carregar();
     let vivo = true;

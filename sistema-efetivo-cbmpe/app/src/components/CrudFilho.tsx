@@ -4,7 +4,7 @@ import { msgErro } from '../lib/util';
 
 /** Lista + formulário em modal para os registros ligados ao militar (afastamentos, formação etc.) */
 export default function CrudFilho<T extends { id?: string }>({
-  titulo, linhas, colunas, novo, form, salvar, excluir, podeEditar, recarregar, rotuloNovo = 'Adicionar', descricao,
+  titulo, linhas, colunas, novo, form, salvar, excluir, podeEditar, recarregar, rotuloNovo = 'Adicionar', descricao, podeEditarLinha, motivoBloqueio,
 }: {
   titulo: string;
   linhas: T[];
@@ -17,6 +17,8 @@ export default function CrudFilho<T extends { id?: string }>({
   recarregar: () => void;
   rotuloNovo?: string;
   descricao?: ReactNode;
+  podeEditarLinha?: (r: T) => boolean;
+  motivoBloqueio?: ReactNode;
 }) {
   const toast = useToast();
   const [edit, setEdit] = useState<any | null>(null);
@@ -35,7 +37,7 @@ export default function CrudFilho<T extends { id?: string }>({
   const cols: ColTabela<T>[] = podeEditar
     ? [...colunas, {
         id: '_acoes', titulo: '', ordenavel: false, className: 'acoes-linha',
-        render: (r: T) => (
+        render: (r: T) => podeEditarLinha && !podeEditarLinha(r) ? <span className="nota">{motivoBloqueio}</span> : (
           <span onClick={(e) => e.stopPropagation()}>
             <Botao pequeno variante="fantasma" onClick={() => { setErro(null); setEdit({ ...r }); }}>Editar</Botao>
             {excluir && <Botao pequeno variante="fantasma" onClick={() => setApagar(r)}>Excluir</Botao>}

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useAuth } from '../lib/auth';
-import { fmtCompetencia, fmtData, msgErro, rpc } from '../lib/util';
+import { fmtCompetencia, fmtData, rpc } from '../lib/util';
+import { useConsulta } from '../lib/consulta';
+import { ListaPendencias } from '../components/Layout';
 import { Aviso, Badge, Cartao, Carregando, Kpi, Tabela, Vazio } from '../components/ui';
 
 const COR = { base: '#7f1d1d', afastado: '#d97706', grade: 'var(--borda)' };
@@ -10,28 +11,18 @@ const COR = { base: '#7f1d1d', afastado: '#d97706', grade: 'var(--borda)' };
 export default function Dashboard() {
   const { escopo, ctx, global } = useAuth();
   const nav = useNavigate();
-  const [d, setD] = useState<any>(null);
-  const [entregas, setEntregas] = useState<any[] | null>(null);
-  const [comp, setComp] = useState<string>('');
-  const [saude, setSaude] = useState<any[]>([]);
-  const [erro, setErro] = useState<string | null>(null);
-
-  useEffect(() => {
-    let vivo = true;
-    setD(null); setErro(null);
-    (async () => {
-      try {
-        const [dash, c] = await Promise.all([rpc('dashboard', { p_ome: escopo }), rpc<string>('competencia_atual')]);
-        const [ent, sa] = await Promise.all([
-          rpc<any[]>('situacao_entregas', { p_competencia: c }),
-          ctx?.pode_ver_saude || global ? rpc<any[]>('saude_resumo', { p_ome: escopo }) : Promise.resolve([]),
-        ]);
-        if (!vivo) return;
-        setD(dash); setComp(c); setEntregas(escopo ? ent.filter((e) => e.ome_id === escopo) : ent); setSaude(sa || []);
-      } catch (e) { if (vivo) setErro(msgErro(e)); }
-    })();
-    return () => { vivo = false; };
-  }, [escopo, ctx, global]);
+  const { dados, erro } = useConsulta(`painel|${escopo}`, async () => {
+    const [dash, c] = await Promise.all([rpc('dashboard', { p_ome: escopo }), rpc<string>('competencia_atual')]);
+    const [ent, sa] = await Promise.all([
+      rpc<any[]>('situacao_entregas', { p_competencia: c }),
+      ctx?.pode_ver_saude || global ? rpc<any[]>('saude_resumo', { p_ome: escopo }) : Promise.resolve([]),
+    ]);
+    return { dash, comp: c, entregas: escopo ? ent.filter((e) => e.ome_id === escopo) : ent, saude: sa || [] };
+  }, 60_000);
+  const d: any = dados?.dash;
+  const comp = dados?.comp || '';
+  const entregas = dados ? dados.entregas : null;
+  const saude: any[] = dados?.saude || [];
 
   if (erro) return <Aviso tom="erro">{erro}</Aviso>;
   if (!d) return <Carregando />;
@@ -50,13 +41,15 @@ export default function Dashboard() {
         </div>
       </div>
 
+      <ListaPendencias />
+
       <div className="kpis">
         <Kpi rotulo="Efetivo ativo" valor={d.total.toLocaleString('pt-BR')} detalhe={`${d.operacional} operacional · ${d.administrativo} administrativo`} onClick={() => nav('/efetivo')} />
         <Kpi rotulo="Disponíveis hoje" valor={d.disponiveis.toLocaleString('pt-BR')} detalhe={`${pct(d.disponiveis)}% do efetivo`} tom="ok" />
         <Kpi rotulo="Afastados hoje" valor={d.afastados} detalhe={`${pct(d.afastados)}% do efetivo`} tom={d.afastados ? 'alerta' : undefined} onClick={() => nav('/afastamentos')} />
         <Kpi rotulo="Readaptados" valor={d.readaptados} detalhe={`Horário especial: ${d.horario_especial}`} onClick={() => nav('/efetivo?condicao=readaptado')} />
         <Kpi rotulo="PCD · Acumulação" valor={`${d.pcd} · ${d.acumulacao}`} detalhe="militares PCD · com acumulação de cargo" />
-        <Kpi rotulo="Cadastro completo" valor={`${d.completude_media}%`} detalhe={`${d.cadastro_completo} fichas 100% preenchidas`} tom={d.completude_media < 80 ? 'alerta' : 'ok'} onClick={() => nav('/efetivo?pendentes=1')} />
+        <Kpi rotulo="Cadastro completo" valor={`${d.completude_media}%`} detalhe={`${d.cadastro_completo} fichas 100% preenchidas`} tom={d.completude_media < 80 ? 'alerta' : 'ok'} onClick={() => nav('/efetivo?condicao=incompleto')} />
       </div>
 
       <div className="grade-2">

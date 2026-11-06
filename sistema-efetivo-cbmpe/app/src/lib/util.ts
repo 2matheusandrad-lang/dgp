@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx';
 import { supabase } from './supabase';
 
 // ---------------- datas ----------------
@@ -22,14 +21,21 @@ export const fmtDataHora = (v?: string | null) => {
   const d = new Date(v);
   return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 };
+const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
 export const fmtCompetencia = (v?: string | null) => {
   if (!v) return '';
   const [a, m] = String(v).slice(0, 10).split('-');
-  const nomes = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
-  return `${nomes[+m - 1]}/${a}`;
+  return `${MESES[+m - 1]}/${a}`;
+};
+export const mesesAte = (iso: string, n: number) => {
+  const [a, m] = iso.split('-').map(Number);
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(a, m - 1 - i, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  });
 };
 
-// ---------------- matrícula ----------------
+// ---------------- matrícula / telefone ----------------
 export const mascaraMatricula = (v: string) => {
   const d = v.replace(/\D/g, '').slice(0, 7);
   return d.length > 6 ? `${d.slice(0, 6)}-${d.slice(6)}` : d;
@@ -49,12 +55,14 @@ export const mascaraTelefone = (v: string) => {
   if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
   return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
 };
+export const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 // ---------------- erros ----------------
 export const msgErro = (e: any): string => {
   const m: string = e?.message || String(e);
   if (/row-level security/i.test(m)) return 'Sem permissão para esta operação nesta OME.';
   if (/militar_matricula_key|duplicate key.*matricula/i.test(m)) return 'Matrícula já cadastrada no sistema. Use "Receber militar transferido".';
+  if (/solicitacao_pendente_unica/.test(m)) return 'Já existe pedido pendente para este militar.';
   if (/duplicate key/i.test(m)) return 'Registro duplicado.';
   if (/MATRICULA_NAO_CADASTRADA/.test(m)) return 'Matrícula não encontrada no sistema.';
   if (/Invalid login credentials/i.test(m)) return 'E-mail ou senha incorretos.';
@@ -62,18 +70,24 @@ export const msgErro = (e: any): string => {
   if (/violates check constraint.*dias/i.test(m)) return 'Quantidade de dias inválida (1 a 3650).';
   if (/violates check constraint.*email/i.test(m)) return 'E-mail inválido.';
   if (/violates check constraint.*cid/i.test(m)) return 'CID em formato inválido (ex.: M54.5).';
-  if (/Failed to fetch/i.test(m)) return 'Sem conexão com o servidor.';
+  if (/Failed to fetch|NetworkError/i.test(m)) return 'Sem conexão com o servidor.';
   return m;
 };
 
-// ---------------- consultas paginadas (Supabase limita 1000 linhas por chamada) ----------------
+// ---------------- consultas (Supabase entrega no máx. 1000 linhas por chamada) ----------------
+// Busca a 1ª página; se vier cheia, busca as próximas em paralelo (em vez de uma por vez).
 export async function buscarTodos<T = any>(montar: () => any, lote = 1000): Promise<T[]> {
-  const todos: T[] = [];
-  for (let de = 0; ; de += lote) {
-    const { data, error } = await montar().range(de, de + lote - 1);
-    if (error) throw error;
-    todos.push(...(data || []));
-    if (!data || data.length < lote) break;
+  const primeira = await montar().range(0, lote - 1);
+  if (primeira.error) throw primeira.error;
+  const todos: T[] = [...(primeira.data || [])];
+  let de = lote;
+  while (todos.length === de) {
+    const paginas = await Promise.all([0, 1, 2].map((i) => montar().range(de + i * lote, de + (i + 1) * lote - 1)));
+    for (const p of paginas) {
+      if (p.error) throw p.error;
+      todos.push(...(p.data || []));
+    }
+    de += 3 * lote;
   }
   return todos;
 }
@@ -84,21 +98,35 @@ export async function rpc<T = any>(fn: string, args?: Record<string, any>): Prom
   return data as T;
 }
 
-// ---------------- exportação ----------------
-export type Coluna<T = any> = { titulo: string; valor: (r: T, i: number) => any; largura?: number };
+// ---------------- colunas de exportação ----------------
+export type Coluna<T = any> = { id?: string; titulo: string; valor: (r: T, i: number) => any; largura?: number; padrao?: boolean };
 
-export function exportarXlsx<T>(arquivo: string, titulo: string, colunas: Coluna<T>[], linhas: T[]) {
-  const cab = colunas.map((c) => c.titulo);
-  const dados = linhas.map((r, i) => colunas.map((c) => {
-    const v = c.valor(r, i);
-    return v === null || v === undefined ? '' : v;
-  }));
-  const ws = XLSX.utils.aoa_to_sheet([[titulo], [`Gerado em ${new Date().toLocaleString('pt-BR')}`], [], cab, ...dados]);
-  ws['!cols'] = colunas.map((c) => ({ wch: c.largura || Math.max(10, c.titulo.length + 2) }));
-  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: 3 + dados.length, c: cab.length - 1 } }) };
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Relatório');
-  XLSX.writeFile(wb, `${arquivo}_${hojeISO()}.xlsx`);
+// ---------------- registro de exportações (LGPD) ----------------
+let autorExportacao = '';
+export const definirAutorExportacao = (nome: string) => { autorExportacao = nome; };
+/** texto que vai no rodapé de todo PDF/Excel gerado */
+export const marcaLgpd = () =>
+  `Uso interno · contém dados pessoais (LGPD) · gerado por ${autorExportacao || 'usuário do sistema'} em ${new Date().toLocaleString('pt-BR')}`;
+const PESSOAL = /telefone|e-?mail|endere|nascimento|cpf|rg\b|natureza|cid\b|contato/i;
+/** registra quem exportou o quê (não bloqueia a exportação se o registro falhar) */
+export async function registrarExportacao(tela: string, arquivo: string, formato: string, registros: number, colunas: string[], pessoal?: boolean) {
+  try {
+    await supabase.rpc('registrar_exportacao', {
+      p_tela: tela, p_arquivo: arquivo, p_formato: formato, p_registros: registros, p_colunas: colunas,
+      p_dados_pessoais: pessoal ?? colunas.some((c) => PESSOAL.test(c)),
+    });
+  } catch { /* registro é complementar */ }
+}
+
+export async function exportarXlsx<T>(arquivo: string, titulo: string, colunas: Coluna<T>[], linhas: T[], agrupar?: (r: T) => string) {
+  const m = await import('./excel');
+  registrarExportacao(titulo, arquivo, 'xlsx', linhas.length, colunas.map((c) => c.titulo));
+  return m.exportarExcel(arquivo, titulo, colunas, linhas, agrupar);
+}
+export async function exportarPdf<T>(arquivo: string, titulo: string, subtitulo: string, colunas: Coluna<T>[], linhas: T[], agrupar?: (r: T) => string, assinatura = false) {
+  const m = await import('./pdf');
+  registrarExportacao(titulo, arquivo, 'pdf', linhas.length, colunas.map((c) => c.titulo));
+  return m.pdfTabela({ arquivo, titulo, subtitulo, colunas, linhas, agrupar, assinatura });
 }
 
 export const ATIVIDADE: Record<string, string> = { OPERACIONAL: 'Operacional', ADMINISTRATIVO: 'Administrativo' };
@@ -119,3 +147,12 @@ export const ordenarAntiguidade = (a: any, b: any) =>
   String(a.nome).localeCompare(String(b.nome), 'pt-BR');
 
 export const semAcento = (s: string) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+// Processo SEI: copia para a área de transferência; se VITE_SEI_PESQUISA estiver definido, abre a pesquisa
+export const SEI_URL = (import.meta.env.VITE_SEI_PESQUISA as string) || '';
+export const linkSei = (processo?: string | null) =>
+  processo && SEI_URL ? SEI_URL.replace('{processo}', encodeURIComponent(processo)) : null;
+
+/** percentual no padrão brasileiro: 104,7% */
+export const pct = (v: number | string | null | undefined, casas = 1) =>
+  v == null || v === '' || isNaN(Number(v)) ? '—' : `${Number(v).toLocaleString('pt-BR', { maximumFractionDigits: casas })}%`;

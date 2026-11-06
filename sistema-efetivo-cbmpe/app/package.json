@@ -1,7 +1,7 @@
 {
   "name": "controle-efetivo-cbmpe",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,11 +10,14 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",
+    "exceljs": "4.4.0",
+    "jspdf": "2.5.2",
+    "jspdf-autotable": "3.8.4",
+    "pdfjs-dist": "4.10.38",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.26.2",
-    "recharts": "2.12.7",
-    "xlsx": "0.18.5"
+    "recharts": "2.12.7"
   },
   "devDependencies": {
     "@types/react": "18.3.11",
