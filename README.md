@@ -1,0 +1,390 @@
+# Sistema de Controle do Efetivo — DGP/CBMPE
+
+Substitui a "Planilha de Controle de Pessoal" (uma aba por OME + aba GERAL) por um banco de dados único no **Supabase** com:
+
+- **acesso individual por usuário**, vinculado a uma ou mais OMEs (o gestor do 1º GB só vê e edita o 1º GB);
+- **cadastro, edição, exclusão e consulta** do efetivo, com histórico de **afastamentos ilimitados** (acabam as colunas fixas "Afastamento (1)/(2)");
+- **painel (dashboard)**, **relatórios** em Excel/PDF e **auditoria** de toda alteração;
+- **movimentações** (inclusão, transferência por SP, desligamento) que levam a ficha do militar entre OMEs sem duplicar a matrícula;
+- **entrega mensal** com prazo no 5º dia útil e **fechamento da competência** (a "planilha salva pela DGP").
+
+---
+
+## 1. O que muda em relação à planilha
+
+| Problema na planilha | Como o sistema resolve |
+|---|---|
+| A aba GERAL empilha abas com layouts diferentes (1º GB tem 41 colunas, as demais 38): colunas ficam desalinhadas e os totais saem errados | Um único banco; a "GERAL" passa a ser qualquer consulta/relatório com o seletor "Todas as OMEs" |
+| 74 matrículas aparecem em duas OMEs (transferência não baixada na origem) | Matrícula é **única**. A OME de destino usa "Receber militar transferido" informando o SP, e o militar sai da origem automaticamente |
+| Aba DTIC quebrada (#REF!) | Sem IMPORTRANGE; cada OME grava direto no banco |
+| "Afastamento (1)" e "(2)" fixos, histórico se perde todo mês | Quantos afastamentos forem necessários; término calculado; status "em curso / previsto / encerrado" |
+| Escrita livre: Operacional/OPERACIONAL/ADM, Férias/FÉRIAS, Sim/SIM, datas 0206 | Listas fixas, datas validadas, **dígito verificador da matrícula** conferido (módulo 11) |
+| CID visível para todo mundo que abre a planilha | Natureza (Físico/Mental) e CID em tabela separada, visível só para quem tem permissão de saúde (LGPD, art. 11) |
+| "Atualizado em" manual | Auditoria automática: quem alterou o quê e quando |
+| Cópia salva no 6º dia útil | Botão "Fechar competência" grava a fotografia do efetivo do mês, consultável depois |
+
+## 2. Estrutura do projeto
+
+```
+netlify.toml           configuração de publicação no Netlify
+supabase/migrations/   scripts SQL: 4 da versão 1.0 + 20261110000000_fase1.sql (1.1) + 20261201000000_versao_1_2.sql (1.2)
+                       + 20261215000000_versao_1_3.sql (1.3) + 20261222000000_versao_1_4.sql (1.4)
+                       + 20261223000000_versao_1_4_1.sql (1.4.1)
+supabase/reverter_1_4_1.sql  desfaz a versão 1.4.1 (volta às regras de acesso da 1.4)
+supabase/reverter_1_4.sql    desfaz a versão 1.4 (volta à 1.3, sem perder dados)
+supabase/reverter_1_3.sql    desfaz a versão 1.3 (volta à 1.2)
+supabase/reverter_1_2.sql    desfaz a versão 1.2 (volta à 1.1)
+supabase/reverter_fase1.sql  desfaz a versão 1.1 (volta à 1.0 sem perder dados da 1.0)
+scripts/backup.bat     backup do banco com pg_dump (Windows)
+supabase/functions/    admin-usuarios: cria usuários e redefine senhas (só ADMIN)
+importacao/            importar_planilha.py: converte a planilha atual em carga para o banco
+                       recarga_1_4.py + almanaque.py: recarga da base (pecúlio + almanaque + planilha), versão 1.4
+app/                   interface web (React + Vite + supabase-js)
+```
+
+## 3. Perfis de acesso
+
+| Perfil | Enxerga | Edita | Uso típico |
+|---|---|---|---|
+| **Administrador (DGP)** | todas as OMEs | tudo, usuários, exclusão definitiva | chefe/adjunto DGP |
+| **Operador DGP** | todas | todas as OMEs; fecha competência; tabelas | equipe DGP |
+| **Consulta geral** | todas | nada | Comando, EMG |
+| **Gestor da OME** | suas OMEs | suas OMEs (inclusive seções) | responsável da SAAdm |
+| **Consulta da OME** | suas OMEs | nada | comandante da OME |
+
+"Pode ver saúde" é uma permissão à parte (natureza Físico/Mental e CID).
+Todas as regras ficam **no banco** (Row Level Security): mesmo que alguém use a API diretamente, não acessa dados de outra OME.
+
+> **Recomendação:** um login por pessoa, não um login compartilhado por OME. Assim a auditoria mostra quem fez cada alteração e um acesso é cortado sem afetar os demais. A aba CADASTROAVISOS já traz os responsáveis de cada OME: eles são os primeiros "Gestores da OME".
+
+## 4. Implantação passo a passo
+
+### 4.1 Criar o projeto no Supabase
+1. Em supabase.com, crie um projeto (região **South America (São Paulo)**). Guarde a senha do banco.
+2. **Authentication > Sign In / Providers > Email:** mantenha e-mail/senha ligado e **desligue "Allow new users to sign up"** (só o ADMIN cria usuários).
+3. **Authentication > URL Configuration:** em *Site URL*, coloque o endereço onde o sistema ficará publicado (passo 4.6).
+
+### 4.2 Criar as tabelas
+No **SQL Editor**, rode, **nesta ordem**, o conteúdo de cada arquivo de `supabase/migrations/`:
+1. `20261019120000_estrutura.sql`
+2. `20261019120100_seguranca.sql`
+3. `20261019120200_views_funcoes.sql`
+4. `20261019120300_dominios.sql`
+
+(Com a Supabase CLI: `supabase link --project-ref SEU_REF` e `supabase db push`.)
+
+### 4.3 Importar a planilha atual
+
+A importação é feita **uma única vez**, no banco ainda vazio. Ela tem duas etapas: gerar os arquivos de carga no seu computador e rodá-los no Supabase.
+
+**a) Preparar o computador (Windows)**
+1. Instale o Python em python.org/downloads. Na primeira tela do instalador, marque **"Add python.exe to PATH"**.
+2. Abra o **Prompt de Comando** (tecla Windows, digite `cmd`) e instale a biblioteca de leitura de Excel:
+   ```
+   py -m pip install openpyxl
+   ```
+
+**b) Gerar os arquivos de carga**
+1. Baixe a planilha do Google Sheets como Excel: *Arquivo > Fazer download > Microsoft Excel (.xlsx)*. Baixe na hora da carga, para levar os dados mais recentes.
+2. Coloque o `.xlsx` na pasta do projeto (`sistema-efetivo-cbmpe`) com um nome simples, por exemplo `planilha.xlsx`.
+3. No Prompt de Comando, entre na pasta e rode o script:
+   ```
+   cd C:\caminho\para\sistema-efetivo-cbmpe
+   py importacao\importar_planilha.py planilha.xlsx saida
+   ```
+4. Ao final, a tela mostra os totais (militares, afastamentos, duplicidades etc.) e a pasta `saida` passa a ter:
+   - `seed_1_militares.sql`: seções, militares e registro de inclusão;
+   - `seed_2_detalhes.sql`: afastamentos, situações funcionais, formação, idiomas e punições;
+   - `relatorio_importacao.xlsx`: tudo o que precisa de correção, por OME.
+
+> Os arquivos da pasta `saida` têm dados pessoais e de saúde. **Não envie para o GitHub nem por e-mail aberto**; apague depois da carga.
+
+**c) Carregar no Supabase pelo SQL Editor (caminho mais simples)**
+1. No painel do Supabase, abra **SQL Editor > New query**.
+2. Abra `seed_1_militares.sql` no Bloco de Notas, copie tudo (Ctrl+A, Ctrl+C), cole no editor e clique **Run**. Aguarde a mensagem de sucesso.
+3. Repita com `seed_2_detalhes.sql`, **nesta ordem**.
+4. Confira, numa nova consulta:
+   ```sql
+   select (select count(*) from militar) as militares,
+          (select count(*) from afastamento) as afastamentos,
+          (select count(*) from formacao) as formacoes;
+   ```
+   Os números devem bater com os que o script mostrou na tela.
+
+**d) Se o SQL Editor recusar o arquivo (tamanho ou tempo esgotado)**
+1. Instale só o cliente do PostgreSQL: no instalador da EDB (postgresql.org/download/windows), marque apenas **Command Line Tools**.
+2. No Supabase, clique em **Connect** (topo do painel) e copie a string de conexão do **Session pooler**. Troque `[YOUR-PASSWORD]` pela senha do banco criada no passo 4.1.
+3. Rode:
+   ```
+   psql "COLE_A_STRING_AQUI" -f saida\seed_1_militares.sql
+   psql "COLE_A_STRING_AQUI" -f saida\seed_2_detalhes.sql
+   ```
+
+**e) Se precisar refazer a carga**
+O script se recusa a rodar em banco que já tem militares. Para recomeçar do zero (só antes de o sistema entrar em uso), rode no SQL Editor:
+```sql
+truncate militar, movimentacao, secao, entrega_mensal, fechamento_mensal, auditoria restart identity cascade;
+```
+Depois gere os arquivos de novo e repita o item c.
+
+**f) Depois da carga**
+Distribua o `relatorio_importacao.xlsx` às OMEs. A aba **Ocorrências** já vem filtrável por OME e indica, em cada linha, o que foi feito e o que a unidade precisa corrigir no sistema.
+
+### 4.4 Publicar a função de criação de usuários
+
+A tela de Administração cria usuários e redefine senhas por meio de uma pequena função que roda no servidor do Supabase (`admin-usuarios`). Ela usa a chave mestra (`service_role`), que **nunca** pode ficar no site, e por isso precisa estar no servidor. Há dois caminhos para publicá-la.
+
+**Opção A: pelo painel do Supabase (sem instalar nada)**
+1. No menu lateral, clique em **Edge Functions > Deploy a new function > Via Editor**.
+2. Apague o código de exemplo e cole todo o conteúdo de `supabase/functions/admin-usuarios/index.ts`.
+3. Dê à função o nome exato **`admin-usuarios`** (o site chama por esse nome).
+4. Clique em **Deploy function** e aguarde de 10 a 30 segundos.
+5. Mantenha ligada a opção de verificação de JWT ("Enforce JWT verification" / "Verify JWT"), que já vem ligada por padrão. Só usuário logado consegue chamar a função, e o código ainda confere se é ADMIN.
+
+`SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` são injetados automaticamente pelo Supabase. A partir da versão 1.2, cadastre também o segredo **`ORIGENS_PERMITIDAS`** (*Edge Functions > Secrets*) com o endereço do site, por exemplo `https://efetivo-dgp.netlify.app` (vários endereços separados por vírgula). Assim a função só aceita chamadas vindas do site oficial. Sem o segredo ela continua funcionando, mas aceita qualquer origem.
+
+**Opção B: pela linha de comando (recomendada se o código ficar no GitHub)**
+Requer Node.js 20 ou superior (nodejs.org). No Prompt de Comando, na pasta do projeto:
+```
+npx supabase login
+npx supabase init
+npx supabase link --project-ref SEU_PROJECT_REF
+npx supabase functions deploy admin-usuarios
+```
+- `login` abre o navegador para autorizar.
+- `init` cria só o arquivo de configuração; responda **N** às perguntas. Ele não apaga as migrations.
+- O **project ref** é o código do endereço do projeto: em `https://abcdxyz.supabase.co`, é `abcdxyz`. Também aparece em *Project Settings > General*.
+
+**Como testar:** depois do passo 4.6, entre como ADMIN e crie um usuário em *Administração > + Novo usuário*. Se aparecer a mensagem "A função admin-usuarios não está publicada", confira o nome da função.
+
+**Se preferir não publicar a função agora:** crie os usuários em *Authentication > Users > Add user* (com "Auto Confirm User" marcado). Eles aparecem como **bloqueados** em Administração, onde o ADMIN define perfil, OMEs e libera o acesso. A única coisa que se perde é o botão "Nova senha".
+
+### 4.5 Criar o primeiro administrador
+
+Como o cadastro público fica desligado, o primeiro ADMIN é criado à mão. Os demais usuários serão criados por ele, pela tela.
+
+1. No Supabase: **Authentication > Users > Add user > Create new user**.
+   - Email: o seu e-mail (de preferência o institucional).
+   - Password: uma senha forte (mínimo de 10 caracteres, com letras e números).
+   - Marque **Auto Confirm User**.
+   - Clique em **Create user**.
+2. O banco cria sozinho o seu perfil, **bloqueado**. Para torná-lo administrador, rode no **SQL Editor**, trocando os dados:
+   ```sql
+   update perfil
+      set papel = 'ADMIN', ativo = true, deve_trocar_senha = false,
+          nome = 'MATHEUS ...', posto = '2º Ten', matricula = '000000-0'
+    where email = 'seu.email@bombeiros.pe.gov.br';
+   ```
+   O resultado deve ser `UPDATE 1`.
+3. Confira:
+   ```sql
+   select email, papel, ativo from perfil;
+   ```
+4. Se o resultado for `UPDATE 0` (usuário criado antes de rodar as migrations), crie o perfil e rode o `update` do item 2 de novo:
+   ```sql
+   insert into perfil (id, email) select id, email from auth.users on conflict do nothing;
+   ```
+
+Recomenda-se ter **dois administradores** (por exemplo, você e o chefe ou adjunto da DGP), para que ninguém fique sem acesso se um deles se ausentar.
+
+### 4.6 Publicar a interface (GitHub + Netlify)
+
+Publicar a partir do GitHub é o melhor caminho: o código fica versionado (dá para ver o que mudou e voltar atrás), e cada alteração enviada ao GitHub é publicada sozinha pelo Netlify.
+
+**a) Colocar o código no GitHub**
+1. Crie uma conta em github.com (se ainda não tiver) e um repositório **privado**, por exemplo `controle-efetivo-cbmpe`. Marque **Private**.
+2. Envie o conteúdo da pasta `sistema-efetivo-cbmpe`. O jeito mais simples é o **GitHub Desktop** (desktop.github.com): *File > Add local repository*, escolha a pasta, *Publish repository* e deixe marcado *Keep this code private*.
+3. **Antes de enviar**, confira que não estão indo:
+   - a planilha `.xlsx`;
+   - a pasta `saida/`;
+   - o arquivo `app/.env`;
+   - a pasta `node_modules`.
+
+   O arquivo `.gitignore` já bloqueia esses itens, mas olhe a lista de arquivos no GitHub Desktop antes do primeiro envio.
+
+**b) Ligar o Netlify ao repositório**
+1. No Netlify: **Add new project (ou Add new site) > Import an existing project > GitHub**. Autorize o acesso ao repositório `controle-efetivo-cbmpe`.
+2. As configurações de build vêm do arquivo `netlify.toml` que está na raiz do projeto, e o Netlify as preenche sozinho:
+   - Base directory: `app`
+   - Build command: `npm run build`
+   - Publish directory: `app/dist`
+3. Ainda nessa tela, clique em **Add environment variables** (ou, depois, em *Site configuration > Environment variables*) e crie:
+
+   | Nome | Valor (Supabase > Project Settings > API) |
+   |---|---|
+   | `VITE_SUPABASE_URL` | Project URL, ex.: `https://abcdxyz.supabase.co` |
+   | `VITE_SUPABASE_ANON_KEY` | chave **anon / public** (ou a "publishable key", conforme o painel) |
+
+   Use **somente** a chave pública. Nunca use a `service_role` / secret key.
+4. Clique em **Deploy**. Em cerca de 1 minuto o site fica no ar num endereço como `https://nome-aleatorio.netlify.app`. Você pode trocar o nome em *Site configuration > Change site name*, por exemplo para `efetivo-dgp.netlify.app`.
+5. Se as variáveis foram criadas depois do primeiro deploy, clique em *Deploys > Trigger deploy > Deploy site* para recompilar com elas.
+
+**c) Avisar o Supabase do endereço do site**
+Em **Authentication > URL Configuration**:
+- **Site URL:** `https://efetivo-dgp.netlify.app`.
+- **Redirect URLs:** adicione `https://efetivo-dgp.netlify.app/**`.
+
+Sem isso, o link de "Esqueci minha senha" leva para o endereço errado.
+
+**d) Primeiro acesso e conferência**
+Abra o endereço, entre com o ADMIN do passo 4.5 e confira:
+- se o painel mostra o total do efetivo importado;
+- se uma ficha abre;
+- se a criação de usuário funciona (passo 4.4).
+
+**e) Atualizações futuras**
+Cada envio (*push*) para a branch `main` do GitHub gera uma nova publicação automática. Se algo der errado, em **Deploys** escolha uma publicação anterior e clique **Publish deploy** para voltar.
+
+> **Atenção ao plano gratuito do Netlify.** Contas criadas a partir de setembro de 2025 usam o modelo de créditos: 300 créditos por mês, 15 por publicação em produção e 20 por GB de tráfego. Se os créditos acabam, **todos os sites da conta ficam fora do ar** até o mês seguinte. Este sistema gasta pouco tráfego (cerca de 300 KB por acesso), mas convém:
+> - agrupar alterações em poucos envios para a `main`, ou desligar a publicação automática em *Site configuration > Build & deploy > Stop builds* e publicar manualmente;
+> - acompanhar em *Usage & billing*;
+> - se você já tem outros sites na mesma conta, considerar uma conta ou equipe separada para o sistema oficial.
+>
+> Contas antigas (anteriores a setembro de 2025) seguem o modelo de 100 GB de tráfego e 300 minutos de build por mês.
+
+### 4.7 Cadastrar as OMEs
+Em **Administração > Usuários e acessos > + Novo usuário**: e-mail (de preferência o institucional da SAAdm), perfil "Gestor da OME" e a(s) OME(s). O sistema gera uma senha provisória para enviar por canal seguro; no primeiro acesso ela é trocada obrigatoriamente.
+
+## 5. Rotina de uso
+
+- **Dia a dia (OMEs):** lançar afastamentos, situações funcionais, formação, punições; incluir militar novo; receber transferido (com o nº do SP); desligar (reserva, reforma etc.).
+- **Até o 5º dia útil:** cada OME confere os dados e clica **Entrega mensal > Confirmar entrega**. O painel da DGP mostra quem entregou no prazo, quem atrasou e quem está pendente.
+- **6º dia útil (DGP):** **Fechar competência** grava a fotografia do mês; o relatório "Efetivo de competência fechada" a consulta depois.
+- **Relatórios:** efetivo nominal, quadro resumo OME × posto, afastamentos no período, situações funcionais, formação acadêmica (ex.: todos os engenheiros civis, que hoje exigem a aba "ArquitEng Civil"), pendências de cadastro, contatos, movimentações, punições. Todos exportam para Excel e imprimem/geram PDF.
+
+## 6. Decisões tomadas na importação (conferir)
+
+- **Lotação** = aba onde o militar está listado. Se a matrícula aparece em duas abas, fica na aba que coincide com a coluna "OME"; a outra linha vai para o relatório (aba "Duplicidades").
+- **Ordem de antiguidade** = ordem das linhas na aba (a planilha já é organizada assim). Pode ser ajustada na ficha.
+- **Término do afastamento** é recalculado (início + dias − 1). Afastamentos sem data de início ou sem dias (ex.: vários RTS) **não** foram importados e estão no relatório para cadastro.
+- **Físico/Mental** só é mantido para LTS, RTS e Laudo médico (na planilha aparecia até em férias e dispensa).
+- **Aba DTIC** (#REF!) foi recuperada a partir da aba GERAL: conferir.
+- **Ano de ingresso** só existia na aba do 1º GB; nas demais OMEs fica como pendência de cadastro.
+- 4 linhas não foram importadas (posto "#N/A" ou matrícula inválida): ver relatório.
+
+## 7. Ajustes recomendados após a carga
+
+- **Administração > OMEs e seções:** preencher os nomes por extenso das OMEs e revisar as seções (vieram do texto da planilha).
+- **Administração > Tabelas:** conferir o nome por extenso de RTS e de outros tipos de afastamento; incluir feriados municipais e pontos facultativos (usados no cálculo do 5º dia útil); incluir quadros de oficiais além de QOC/QOA, se houver.
+
+## 8. Segurança, LGPD e operação
+
+- O sistema guarda dados pessoais e **dados sensíveis de saúde** (CID). Antes de colocar em produção, recomenda-se formalizar com a DTIC e com o encarregado de dados (LGPD) do CBMPE: hospedagem em nuvem, base legal, prazo de guarda e quem pode ver saúde.
+- Banco hospedado em São Paulo; acesso por HTTPS; senhas com no mínimo 10 caracteres; senha provisória trocada no 1º acesso.
+- Toda inclusão, alteração e exclusão fica na tabela `auditoria`, com o usuário e o conteúdo antes/depois.
+- Exclusão definitiva só pelo ADMIN. Para saída do efetivo use **Desligar** (o histórico é preservado).
+- **Termo de responsabilidade:** desde a 1.2, todo usuário aceita o termo vigente antes de entrar; uma nova versão (Administração > Termo de uso) exige novo aceite de todos.
+- **Senha provisória:** o banco guarda a "impressão" da senha provisória e só libera o acesso quando ela muda de fato.
+- **Exportações registradas:** todo Excel/PDF sai com a marca "uso interno, LGPD" e o nome de quem gerou, e fica em Histórico > Exportações.
+- **Cabeçalhos de segurança** (`netlify.toml`): CSP restrita ao próprio site e ao Supabase, HSTS, bloqueio de iframe, Permissions-Policy.
+- **Backup:** confira os planos vigentes do Supabase. Os planos pagos incluem backups diários automáticos, e projetos do plano gratuito podem ser pausados por inatividade. Para uso oficial, use um plano pago ou exporte com `pg_dump` periodicamente.
+
+## 9. Testes realizados
+
+- Migrations executadas em PostgreSQL 16, com a carga real (2.507 militares, 184 afastamentos, 2.306 formações).
+- Testes de permissão: gestor não insere nem vê militar de outra OME; não muda OME por edição direta; não grava CID sem permissão; não se promove a ADMIN; leitor não edita; usuário bloqueado não vê nada; transferência e recebimento exigem documento.
+- Interface testada no navegador contra o banco real: login, painel, efetivo, ficha, lançamento de afastamento, histórico, entrega mensal, relatórios, criação de usuário e recebimento de militar transferido, em desktop e celular.
+
+## 10. Versão 1.1 (Fase 1)
+
+Atualização incremental e sem apagar dados: `supabase/migrations/20261110000000_fase1.sql` roda numa transação (ou aplica tudo, ou nada) e registra a versão na tabela `versao_sistema`. Se for executado duas vezes, para com a mensagem "versão 1.1 já aplicada". Quem está na 1.0 aplica a 1.1 e a 1.2 em seguida, na mesma janela de manutenção (ver seção 11 e o "Guia da atualização").
+
+| Área | O que entrou |
+|---|---|
+| Desempenho | Regras de acesso (RLS) reescritas e índices novos: lista de todas as OMEs de ~1,7 s para ~40 ms no banco; painel de ~2 s para ~70 ms; telas guardam os dados em cache e só recarregam o que mudou |
+| Efetivo | Filtros na URL (link compartilhável), atalhos com contagem, resumo do resultado, seleção com ações em lote (seção, atividade, afastamento, conferido), edição direta na tabela, exportação Excel/PDF com escolha de colunas e agrupamento, ficha individual em PDF |
+| Conferência mensal | Lista "conferido" por militar com progresso, comparação com o mês anterior, planilha da OME para baixar, preencher e reenviar com prévia antes de gravar; a entrega mensal exige 100% conferido ou justificativa |
+| QOD | Previsto × existente × pronto por OME e posto (QOC/QOA opcional), claros, histórico mensal, importação por planilha, edição em grade e impacto do QOD ao transferir |
+| Desligamentos | Só a DGP registra (motivo da lista, publicação BG/DOE ou SEI obrigatória); OMEs comunicam por pedido que a DGP efetiva ou devolve; agregação e cessão viram tipos de afastamento (não desligam) |
+| Alertas | Sino com pendências por perfil, dentro do sistema |
+| Indicadores e boletim | Disponibilidade, cobertura do QOD, prontidão, taxa de afastamento, qualidade cadastral e pontualidade, cada um com ficha de definição; boletim mensal em PDF |
+| Segurança (LGPD) | Natureza/CID só por consulta registrada: cada visualização ou gravação fica em "Histórico > Acessos a dados de saúde" (visível ao ADMIN) |
+| QOD e almanaque em PDF | Tela "QOD e almanaque" (DGP): o QOD do mês e os 3 volumes do almanaque são lidos no navegador (pdf.js), sem guardar o arquivo; o QOD tem somas e total conferidos antes de gravar; o almanaque atualiza posto (com confirmação), quadro, antiguidade, ano de ingresso e nome de guerra, e lista quem está sem cadastro ou fora do almanaque. Novas OMEs CG, SCG e CPP |
+| Operação | Busca rápida Ctrl+K, processo SEI clicável (opcional, `VITE_SEI_PESQUISA`), quadro resumo separando QOC/QOA, origem "planilha" na auditoria, rotina de backup (`scripts/backup.bat`) |
+
+**Reverter:** `supabase/reverter_fase1.sql` desfaz as mudanças de estrutura (dados lançados nas tabelas novas da 1.1 são perdidos; os da 1.0 ficam) e, no Netlify, publica-se de novo o deploy anterior.
+
+**Testes da 1.1:** migração aplicada, revertida e reaplicada sobre a carga real (2.507 militares); testes SQL por perfil (RLS, conferência, lote, desligamento por pedido, log de saúde, QOD, boletim, pendências); 24 fluxos testados no navegador (gestor, DGP, admin e leitor), sem erros no console, incluindo ida e volta da planilha da OME, importação de QOD e geração dos PDFs.
+
+## 11. Versão 1.2 (segurança + Férias/PAF)
+
+Aplicada logo depois da 1.1, na mesma manutenção: `supabase/migrations/20261201000000_versao_1_2.sql`. Exige a 1.1, roda numa transação e se recusa a rodar duas vezes.
+
+| Área | O que entrou |
+|---|---|
+| Termo de uso | Aceite obrigatório no primeiro acesso e a cada nova versão; o ADMIN publica versões novas |
+| Senha provisória | Acesso só depois da troca real da senha (conferida no banco, não só na tela) |
+| Campos oficiais | Posto, quadro, nome, matrícula, antiguidade e data de ingresso só mudam pela DGP (ou pelo almanaque); a OME usa "Pedir correção à DGP", que a DGP aplica ou devolve em "Desligamentos e pedidos > Correções cadastrais" |
+| Data de ingresso | Nova, vinda do almanaque (data de praça); o ano de ingresso passa a ser calculado dela |
+| Exportações | Marca LGPD e registro de cada arquivo gerado (Histórico > Exportações) |
+| Auditoria | Varredura de CID/saúde escrito em texto livre; acessos por OME |
+| Férias (PAF) | Módulo novo pela Portaria do CG nº 312/2025: exercícios (gozo de 01/12/N a 31/12/N+1), proposta da OME (30 dias ou 2 × 15, início no dia 1º ou 16), limite de 10% por mês por OME (órgãos de ensino fora), períodos restritos, 12 meses de serviço, acúmulo, reprogramação a pedido/de ofício (60 dias)/obrigatória e interrupção, exceções decididas pelo Diretor da DGP, homologação, publicação e marcação de inserção no SGP |
+| Férias = afastamento | Cada período programado vira afastamento "Férias" sozinho; férias não se lançam mais como afastamento avulso |
+| Servidores civis | Cadastro simples, só para o PAF |
+| Importação do PAF | A planilha do PAF é lida no navegador e gravada uma única vez (histórico); exercícios com erro de digitação são marcados e podem ficar de fora |
+| Ajuda | Página de ajuda por perfil |
+| Celular | Tabelas viram cartões em telas estreitas |
+
+**Reverter:** `supabase/reverter_1_2.sql` volta à 1.1 (os dados de férias, civis, termo e pedidos de correção são perdidos; o resto fica). Para voltar à 1.0, rode em seguida `supabase/reverter_fase1.sql`.
+
+**Testes da 1.2:** 1.1 + 1.2 aplicadas, revertidas e reaplicadas sobre a carga real; testes SQL de segurança (troca de senha, termo, campos oficiais, exportações, permissões) e de todas as regras da Portaria 312; importação da planilha real do PAF (6.659 períodos lidos, cerca de 6.200 gravados em segundos, ~450 de matrículas sem cadastro listadas para conferência); fluxo completo no navegador (importar, abrir exercício, restrição, proposta com exceção, reprogramação, homologação, SGP, pedido de correção, novo termo, celular) e os 24 fluxos da 1.1, sem erros de console e com a CSP ativa.
+
+## 12. Versão 1.3 (consultas, regiões, antiguidade)
+
+Script: `supabase/migrations/20261215000000_versao_1_3.sql`. Exige a 1.2, roda numa transação e se recusa a rodar duas vezes. Não apaga dados.
+
+| Área | O que entrou |
+|---|---|
+| Consultas | Tela nova: assunto (militares, afastamentos, férias, movimentações), filtros livres combinados com E/OU, agrupamento em linhas × colunas, quantidade, pessoas distintas, soma ou média, percentuais, gráfico, mapa e lista nominal (clique em qualquer número). Consultas salvas (a DGP pode compartilhar) e link copiável. Roda no navegador sobre o que o usuário já pode ver: nenhuma consulta passa da permissão de quem pergunta. Data de referência: hoje ou um mês fechado |
+| Regiões | Cadeia de comando (`ome.comando_id`) e OMEs regionais (`ome.regional`: DIM, DInter/1, DInter/2). Painel por região com existente × QOD, disponíveis, afastados e férias, e mapa de Pernambuco por município (malha do IBGE embutida, sem serviço externo) |
+| Acesso pela hierarquia | Quem tem uma OME passa a consultar, sem editar, as OMEs subordinadas a ela |
+| Municípios | Tabela `municipio` (185, código IBGE); cidade da sede da OME e de cada seção (preenchidas automaticamente pelo nome "1ª SB (Cidade)") |
+| Antiguidade | Função `antiguidade_lista()`: posição no posto/quadro, na OME, no posto dentro da OME, na região e geral. Na ficha, na coluna "Antig." do Efetivo e na "Lista de antiguidade" em Relatórios |
+| QOC × QOA | Filtro por quadro e por região no Efetivo; quadro como dimensão nas consultas |
+| Férias | Filtros do quadro de férias (situação no exercício, posto, quadro, seção, ano de ingresso, mês) e indicador de gozo no mês planejado por OME |
+| Dicionário de dados | Tabela `catalogo_campo` e tela própria: definição, fonte oficial, responsável, quem edita e sensibilidade de cada informação, exportável para o regimento |
+
+**Depois de aplicar:** em Administração > Estrutura e regiões, conferir/aplicar a sugestão de regiões, ajustar o comando superior de cada OME e o município das OMEs sem cidade.
+
+**Reverter:** `supabase/reverter_1_3.sql` (perde a hierarquia, os municípios, as consultas salvas e o dicionário; o resto fica).
+
+**Testes da 1.3:** aplicada, revertida e reaplicada sobre a carga real; testes SQL de hierarquia (ciclos bloqueados, leitura das subordinadas sem edição), antiguidade, consultas salvas, dicionário e acesso anônimo; fluxo completo no navegador (estrutura, regiões, mapa, consultas prontas e montadas, salvar e compartilhar, efetivo por quadro, ficha, lista de antiguidade, filtros do PAF, dicionário, gestor restrito à OME, celular) e os 24 fluxos da 1.1, sem erros de console, com a CSP ativa.
+
+## 13. Versão 1.4 (recarga da base, novos dados, comportamento)
+
+Script: `supabase/migrations/20261222000000_versao_1_4.sql`. Exige a 1.3, roda numa transação e se recusa a rodar duas vezes. Não apaga dados.
+
+| Área | O que entrou |
+|---|---|
+| Novos dados do militar | `sexo`, `data_nascimento` (idade), `numero_funcional`, `orgao_cessao` (vazio = no CBMPE) e `data_promocao` (tempo no posto). Só a DGP altera (a OME pede correção pela ficha). Raça/cor do pecúlio **não** é armazenada (LGPD art. 11) |
+| Fonte de cada campo | Pecúlio: matrícula, nome, posto, quadro, OME, sexo, nº funcional, órgão de cessão, nome de guerra. Almanaque: nascimento, data de praça, nº de antiguidade, data da última promoção. Planilha/OME: seção, atividade, afastamentos, situações funcionais, escolaridade, idiomas, contato (telefone do pecúlio só onde a planilha está vazia) |
+| Comportamento | Tabelas `comportamento_publicado` (histórico do publicado em boletim; o mais recente é o oficial) e `comportamento_regra` (parâmetros); `punicao` ganha publicação, natureza, fim do cumprimento, data de contagem (calculada) e cancelamento. Motor `comportamento_avaliar`/`comportamento_situacao` e visão `v_comportamento`: classe calculada pela escala móvel, desde quando, próxima mudança, situação (em dia, melhoria ou reclassificação a publicar, sem base) e "base estimada" |
+| Regras do cálculo | Lei 11.817/2000: inclusão no Bom (art. 45 §2); classes do art. 46 avaliadas da melhor para a pior; 2 detenções = 1 prisão (art. 49), repreensão como sanção menor; condenação por crime = prisão e por contravenção = detenção (art. 47); contagem do fim do cumprimento (art. 48); cancelamento e anulação por elogio (arts. 60-64, 67 §9). Decreto 50.014/2020: desde 27/12/2020 a pena conta da publicação após os recursos (art. 9º); oficiais e aspirantes não são classificados (art. 6º §2) |
+| Telas | "Comportamento" (KPIs, a publicar com registro em lote e exportação para a nota do boletim, próximas mudanças, todas as praças, importação por planilha do publicado e das punições, regras e parâmetros); na ficha, a aba "Comportamento e punições" e os campos novos; consultas com sexo, idade, faixa etária, tempo no posto, órgão de cessão e comportamento |
+| PAF | Importação entende "2025.0" e, sem código, usa a janela de gozo (art. 1º da Portaria 312) para achar o exercício; exercícios suspeitos (antes de 2000, muito à frente ou com 1 a 3 períodos antigos) vêm marcados como "não importar" |
+| Almanaque | A leitura mensal passa a trazer nascimento e data da última promoção; antiguidade e promoção só se aplicam no posto em que almanaque e sistema concordam |
+| Matrícula de 5 dígitos | "12345-6" vira "012345-6" (o dígito verificador continua válido) na recarga e nas importações |
+
+**Recarga da base (uma vez, antes do uso oficial):** `importacao/recarga_1_4.py PECULIO.xlsx PLANILHA.xlsx ALM_OF.txt ALM_SGT.txt ALM_CBSD.txt saida/` (almanaques convertidos com `pdftotext -layout`). Gera `recarga_1_4_parte1.sql`, `recarga_1_4_parte2.sql` e `relatorio_recarga_1_4.xlsx`, **que contêm dados pessoais e não vão para o repositório**. A parte 1 exige confirmação explícita (troca de NAO por SIM), apaga os militares e o que depende deles (afastamentos, férias, punições, movimentações, conferências, solicitações, entregas e fechamentos de teste) e recarrega; mantém usuários, OMEs, seções, regiões, QOD, servidores civis e configurações. Depois, reimportar o PAF pela tela de Férias.
+
+**Reverter:** `supabase/reverter_1_4.sql` (remove o cálculo e devolve as regras de cadastro da 1.3; todos os dados ficam guardados e a 1.4 pode ser reaplicada).
+
+**Testes da 1.4:** aplicada, revertida e reaplicada sobre a base da 1.3; 18 casos do motor de comportamento (classes, janelas, cancelamento, sanções menores, tempo de serviço) e regras de acesso (OME só registra nas próprias praças, leitor não registra, oficial recusado, só a DGP altera os dados oficiais, só o administrador altera os parâmetros, anônimo bloqueado); a visão em conjunto confere com o cálculo individual nas 2.277 praças; recarga real (2.651 militares) com as duas partes e as travas de confirmação e de repetição; 72 verificações no navegador (ficha, comportamento, publicação em lote, importação das planilhas, consultas prontas, importação do PAF 2026, leitura dos três almanaques conferindo com a recarga, gestor, leitor, administrador, celular, todas as telas), sem erros de console, com a CSP ativa.
+
+## 14. Versão 1.4.1 (ajuste de acesso)
+
+Script: `supabase/migrations/20261223000000_versao_1_4_1.sql`. Exige a 1.4, roda numa transação, se recusa a rodar duas vezes e não apaga dados.
+
+| Quem | Altera | Consulta |
+|---|---|---|
+| DGP (papéis DGP e ADMIN) | Tudo: inclusão, transferência, desligamento e reinclusão; férias (PAF, propostas, reprogramações, servidores civis); situações funcionais; comportamento e punições; dados oficiais (posto, quadro, nome, nome de guerra, matrícula, nº funcional, sexo, nascimento, antiguidade, ano e data de ingresso, promoção, órgão de cessão) | Todo o CBMPE |
+| Gestor da OME | Seção, atividade, contato, endereço e observações; afastamentos (com saúde, se tiver permissão); formação e idiomas; seções da OME; conferência e entrega mensal; planilha da OME (sem nome de guerra e ano de ingresso) | Fichas das suas OMEs (e subordinadas) e pecúlio geral |
+| Leitor da OME | Nada | Fichas das suas OMEs (e subordinadas) e pecúlio geral |
+
+- **Pedidos à DGP pela tela** (comunicar desligamento, pedir correção, pedir reprogramação): desativados; a DGP ainda decide os que estavam pendentes.
+- **Pecúlio geral:** função `peculio_geral()` (security definer, só para usuários ativos) com identificação e lotação do efetivo ativo: matrícula, nº funcional, nome, nome de guerra, posto, quadro, OME, município da sede, órgão de cessão, sexo, ingresso e antiguidade. Sem contato, endereço, nascimento, saúde, férias ou disciplina. Tela "Pecúlio geral" com filtros, ordem de antiguidade e exportação registrada.
+- **Movimentações:** a lista deixa de mostrar as inclusões da recarga.
+
+**Reverter:** `supabase/reverter_1_4_1.sql` devolve as funções e regras exatamente como na 1.4 (conferido por comparação) e remove o pecúlio geral.
+
+**Testes da 1.4.1:** aplicada, revertida e reaplicada; corpos das funções e regras de acesso idênticos aos da 1.4 depois da reversão; 11 recusas para o gestor (transferir, receber, incluir, comunicar desligamento, pedir correção, propor férias, situação funcional, punição, comportamento, nome de guerra, servidor civil) e as alterações que continuam com a OME (telefone, afastamento, formação, planilha com nome de guerra ignorado); pecúlio geral com 2.651 militares para gestor e leitor, ficha só nas próprias OMEs, anônimo bloqueado; fluxo no navegador por perfil.
