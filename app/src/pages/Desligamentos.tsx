@@ -43,7 +43,7 @@ export default function Desligamentos() {
   return (
     <div className="pagina">
       <div className="pagina-cab">
-        <div><h1>{gestaoGlobal ? 'Desligamentos e pedidos' : 'Desligamentos'}</h1><p className="sub">Saídas do efetivo ativo (reserva, reforma, falecimento, exoneração…). Registro exclusivo da DGP; as OMEs consultam.</p></div>
+        <div><h1>Desligamentos</h1><p className="sub">Saídas do efetivo ativo (reserva, reforma, falecimento, exoneração…). Registro exclusivo da DGP; as OMEs consultam.</p></div>
         <div className="acoes">
           {gestaoGlobal && <Botao variante="primario" onClick={() => setNovo(true)}>Registrar desligamento</Botao>}
         </div>

@@ -6,7 +6,7 @@ import { recarregarDominios, useDominios } from '../lib/dominios';
 import { invalidar } from '../lib/consulta';
 import { PAPEL, fmtData, fmtDataHora, mascaraMatricula, msgErro, semAcento } from '../lib/util';
 import { Abas, Aviso, Badge, Botao, Campo, Cartao, Carregando, Modal, Tabela, useToast } from '../components/ui';
-import { SUGESTAO_REGIOES, mapaRegioes } from '../lib/regioes';
+import { mapaRegioes } from '../lib/regioes';
 import { MUNICIPIOS_PE, nomeMunicipio } from '../lib/municipios';
 
 export default function Admin() {
@@ -248,7 +248,7 @@ function OmesSecoes() {
             <option value="">—</option>{dom.omes.filter((x) => x.id !== editOme.id).map((x) => <option key={x.id} value={x.id}>{x.sigla}</option>)}
           </select></Campo>
           <Campo rotulo="Município da sede"><SelMunicipio valor={editOme.municipio_ibge ?? null} onChange={(v) => setEditOme({ ...editOme, municipio_ibge: v })} /></Campo>
-          <label className="check"><input type="checkbox" checked={!!editOme.regional} onChange={(e) => setEditOme({ ...editOme, regional: e.target.checked })} /> Define uma região (DIM, DINTER)</label>
+          <label className="check"><input type="checkbox" checked={!!editOme.regional} onChange={(e) => setEditOme({ ...editOme, regional: e.target.checked })} /> Define uma região (DIM, DINTER I, DINTER II, DIESP)</label>
           <label className="check"><input type="checkbox" checked={!!editOme.ativo} onChange={(e) => setEditOme({ ...editOme, ativo: e.target.checked })} /> Ativa</label>
         </div>}
       </Modal>
@@ -269,7 +269,6 @@ export function SelMunicipio({ valor, onChange, disabled, vazio = '—' }: { val
 function Estrutura() {
   const dom = useDominios();
   const toast = useToast();
-  const [sugestao, setSugestao] = useState(false);
   const [lote, setLote] = useState<{ ids: Set<number>; mun: number | null } | null>(null);
   const regioes = useMemo(() => mapaRegioes(dom), [dom]);
   if (!dom) return <Carregando />;
@@ -279,16 +278,10 @@ function Estrutura() {
     if (error) toast(msgErro(error), 'erro'); else { recarregarDominios(); invalidar('regioes'); invalidar('cl:'); }
   };
   const semMun = (omeId: number) => dom.secoes.filter((s) => s.ome_id === omeId && s.ativo && !s.municipio_ibge).length;
-  const propostas = Object.entries(SUGESTAO_REGIOES).flatMap(([reg, siglas]) => {
-    const r = dom.omes.find((o) => o.sigla === reg);
-    return siglas.map((sg) => dom.omes.find((o) => o.sigla === sg)).filter((o): o is NonNullable<typeof o> => !!o && !!r && o.comando_id == null)
-      .map((o) => ({ o, r: r! }));
-  });
   return (
     <>
-      <Aviso tom="info">A região de cada OME é a OME regional (DIM, DInter/1, DInter/2) encontrada subindo pelo "comando superior". Quem tem acesso a uma OME também passa a consultar, sem editar, as OMEs subordinadas a ela. O município alimenta o mapa; seções sem cidade usam a da OME.</Aviso>
+      <Aviso tom="info">Regiões: DIM (GBI, GBMar, GBS, GBAPH), DINTER I (1º, 2º, 6º e 7º GB), DINTER II (3º, 4º, 5º e 9º GB) e DIESP (CATs). Cada uma é também uma OME, com efetivo próprio. A região de uma OME é a OME regional encontrada subindo pelo "comando superior". Quem tem acesso a uma OME também consulta, sem editar, as OMEs subordinadas a ela. O município alimenta o mapa; seções sem cidade usam a da OME.</Aviso>
       <Cartao titulo="Cadeia de comando, regiões e municípios" acoes={<span className="acoes">
-        {propostas.length > 0 && <Botao pequeno onClick={() => setSugestao(true)}>Aplicar sugestão de regiões ({propostas.length})</Botao>}
         {omes.some((o) => o.ativo && !o.municipio_ibge) && <Botao pequeno onClick={() => setLote({ ids: new Set(omes.filter((o) => o.ativo && !o.municipio_ibge).map((o) => o.id)), mun: 2611606 })}>Município das OMEs sem cidade</Botao>}
       </span>}>
         <div className="tabela-rolagem">
@@ -326,17 +319,6 @@ function Estrutura() {
             ))}
           </div>
         </>}
-      </Modal>
-      <Modal aberto={sugestao} titulo="Aplicar sugestão de regiões" onFechar={() => setSugestao(false)}
-        rodape={<><Botao onClick={() => setSugestao(false)}>Cancelar</Botao><Botao variante="primario" onClick={async () => {
-          for (const p of propostas) {
-            const { error } = await supabase.from('ome').update({ comando_id: p.r.id }).eq('id', p.o.id);
-            if (error) { toast(msgErro(error), 'erro'); break; }
-          }
-          recarregarDominios(); invalidar('regioes'); invalidar('cl:'); setSugestao(false); toast('Sugestão aplicada. Ajuste o que for preciso na tabela.');
-        }}>Aplicar</Botao></>}>
-        <p>Só OMEs ainda sem comando superior recebem a sugestão. Confira antes, porque ela foi montada a partir das cidades das seções e precisa de confirmação:</p>
-        <ul>{Object.entries(SUGESTAO_REGIOES).map(([reg, siglas]) => <li key={reg}><strong>{reg}</strong>: {siglas.filter((sg) => propostas.some((p) => p.o.sigla === sg)).join(', ') || <span className="nota">nada a aplicar</span>}</li>)}</ul>
       </Modal>
     </>
   );

@@ -89,8 +89,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const mostrar = useCallback((texto: string, tom: 'ok' | 'erro' = 'ok') => {
     const id = Date.now() + Math.random();
     setLista((l) => [...l, { id, texto, tom }]);
-    setTimeout(() => setLista((l) => l.filter((t) => t.id !== id)), tom === 'erro' ? 7000 : 3500);
+    setTimeout(() => setLista((l) => l.filter((t) => t.id !== id)), tom === 'erro' ? 9000 : 3500);
   }, []);
+  // nenhuma falha fica muda: erro não tratado em qualquer tela vira aviso
+  useEffect(() => {
+    const ignorar = (m: string) => !m || /ResizeObserver loop|Script error\.?$|extension:\/\//i.test(m);
+    const avisar = (m: string) => { if (!ignorar(m)) { console.error('Erro não tratado:', m); mostrar(`Algo deu errado: ${m.slice(0, 200)}. Recarregue a página (Ctrl+F5); se continuar, tente em outro navegador e avise a DGP.`, 'erro'); } };
+    const e1 = (e: ErrorEvent) => avisar(e.error?.message || e.message || '');
+    const e2 = (e: PromiseRejectionEvent) => avisar(e.reason?.message || (typeof e.reason === 'string' ? e.reason : ''));
+    window.addEventListener('error', e1);
+    window.addEventListener('unhandledrejection', e2);
+    return () => { window.removeEventListener('error', e1); window.removeEventListener('unhandledrejection', e2); };
+  }, [mostrar]);
   return (
     <ToastCtx.Provider value={mostrar}>
       {children}

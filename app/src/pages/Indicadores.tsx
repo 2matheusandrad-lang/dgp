@@ -81,7 +81,7 @@ export default function Indicadores() {
                   <XAxis type="number" tick={{ fontSize: 12 }} unit="%" />
                   <YAxis type="category" dataKey="sigla" width={110} tick={{ fontSize: 11 }} interval={0} />
                   <Tooltip formatter={(v: any, _n, p: any) => [`${pct(v, 2)} (efetivo ${p.payload.efetivo})`, 'Taxa']} />
-                  <Bar dataKey="taxa" fill="#8f1d1d" radius={[0, 3, 3, 0]} isAnimationActive={false} />
+                  <Bar dataKey="taxa" fill="#5b6b82" radius={[0, 3, 3, 0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             ) : <p className="nota">Sem dados.</p>}

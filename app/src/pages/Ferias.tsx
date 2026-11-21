@@ -901,12 +901,15 @@ function Importar() {
     const o = (dom?.omes || []).find((x) => n(x.sigla) === n(txt) || (x.nome && n(x.nome) === n(txt)));
     return o?.id ?? '';
   };
+  const [erroLeitura, setErroLeitura] = useState<string | null>(null);
+  const [arqLido, setArqLido] = useState<string | null>(null);
   const ler = async (f: File) => {
-    setLendo(true); setRes(null);
+    setLendo(true); setRes(null); setErroLeitura(null); setAn(null); setArqLido(`${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB)`);
     try {
       const { lerPlanilhaPaf } = await import('../lib/excel');
       const lido = await lerPlanilhaPaf(f);
-      if (!lido.abas.length) throw new Error('Não encontrei abas "FÉRIAS AAAA" com a coluna MATRÍCULA.');
+      if (!lido.abas.length) throw new Error(`Não encontrei a coluna MATRÍCULA nas primeiras 20 linhas de nenhuma aba. Abas do arquivo: ${lido.todas.join(', ') || '(nenhuma)'}. As abas devem se chamar "FÉRIAS 2025", "FÉRIAS 2026"... e ter uma linha de títulos com MATRÍCULA.`);
+      if (!lido.linhas.length) throw new Error(`Li as abas ${lido.abas.join(', ')}, mas nenhuma linha tinha matrícula preenchida abaixo dos títulos.`);
       const m = montarImportacao(lido.linhas);
       const [mil, civ] = await Promise.all([
         buscarTodos<any>(() => supabase.from('militar').select('matricula, situacao').order('matricula')),
@@ -931,7 +934,12 @@ function Importar() {
       });
       setExs(e); setCivis({});
       setAn({ arquivo: f.name, lido, ...m, semCad: [...semCad.values()].sort((a, b) => b.n - a.n), porEx: [...porEx.entries()].sort((a, b) => b[0] - a[0]) });
-    } catch (err) { toast(msgErro(err), 'erro'); } finally { setLendo(false); }
+    } catch (err) {
+      console.error('Importação do PAF:', err);
+      const m = msgErro(err);
+      const ilegivel = /NotReadable|could not be read|permission/i.test(String((err as any)?.name || '') + ' ' + m);
+      setErroLeitura(ilegivel ? `O navegador não conseguiu ler o arquivo. Feche-o no Excel e, se ele estiver no OneDrive, na rede ou aberto direto do e-mail/SEI, copie-o para a Área de Trabalho e escolha a cópia. (${m})` : m);
+    } finally { setLendo(false); }
   };
   const fora = (a: number) => exs[a]?.situacao === 'IGNORAR';
   const suspeito = (a: number, n: number) => a > new Date().getFullYear() + 1 || (n <= 3 && a < new Date().getFullYear() - 3);
@@ -957,7 +965,9 @@ function Importar() {
     <Cartao titulo="Importar a planilha do PAF">
       <p className="nota">Use uma única vez, para trazer o histórico. A planilha é lida no seu computador. Linhas com datas de reprogramação viram períodos com as datas reais; linhas só com o mês previsto viram 30 dias a partir do dia 1º (ou 2 × 15), marcadas como "dia estimado". Repetições são ignoradas, e as férias já lançadas como afastamento são aproveitadas, sem duplicar. As regras da Portaria 312 não bloqueiam o histórico.</p>
       <Botao variante="primario" disabled={lendo || !!prog} onClick={() => ref.current?.click()}>{lendo ? 'Lendo…' : 'Escolher planilha (.xlsx)'}</Botao>
-      <input ref={ref} type="file" accept=".xlsx" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) ler(f); }} />
+      <input ref={ref} type="file" accept=".xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) ler(f); }} />
+      {arqLido && <p className="nota">{lendo ? 'Lendo' : 'Arquivo'}: {arqLido}{lendo ? '… (planilhas grandes levam até 1 minuto)' : ''}</p>}
+      {erroLeitura && <Aviso tom="erro">{erroLeitura}</Aviso>}
     </Cartao>
     {res && <Aviso tom="ok">Importação concluída: {res.importados} períodos gravados, {res.repetidos} já existiam, {res.civis_cadastrados} servidores civis cadastrados, {res.sem_cadastro} períodos sem cadastro ficaram de fora. <button className="link" onClick={() => nav('/ferias?aba=quadro')}>Ver o quadro de férias</button></Aviso>}
     {an && !res && <>

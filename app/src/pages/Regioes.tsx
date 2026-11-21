@@ -70,7 +70,7 @@ export default function Regioes() {
   const semEstrutura = !dom.omes.some((o) => o.regional && dom.omes.some((x) => x.comando_id === o.id));
   const valoresMapa = new Map([...calc.porMun].map(([c, y]) => [c, medida === 'existente' ? y.ex : medida === 'disponiveis' ? y.disp : medida === 'afastados' ? y.af : y.fe]));
   const omesRegiao = dom.omes.filter((o) => o.ativo && calc.porOme.has(o.id) && (!selRegiao || regioes.de(o.id).rotulo === selRegiao))
-    .sort((a, b) => regioes.de(a.id).ordem - regioes.de(b.id).ordem || a.ordem - b.ordem);
+    .sort((a, b) => regioes.de(a.id).ordem - regioes.de(b.id).ordem || Number(!!b.regional) - Number(!!a.regional) || a.ordem - b.ordem);
   const consultaOme = (sigla: string) => nav(`/consultas?q=${codificar({ assunto: 'militares', filtros: [{ campo: 'situacao', op: 'in', valor: ['Ativo'] }, { campo: 'ome', op: 'in', valor: [sigla] }], modo: 'E', linhas: 'secao', colunas: 'disponivel', medida: 'qtd' })}`);
   const consultaMun = (c: number) => nav(`/consultas?q=${codificar({ assunto: 'militares', filtros: [{ campo: 'situacao', op: 'in', valor: ['Ativo'] }, { campo: 'municipio', op: 'in', valor: [nomeMunicipio.get(c)!] }], modo: 'E', linhas: 'ome', colunas: 'posto', medida: 'qtd' })}`);
 
@@ -139,7 +139,7 @@ export default function Regioes() {
                   const claros = x.previsto != null ? x.previsto - x.existente : null;
                   return (
                     <tr key={o.id} className="clicavel" onClick={() => consultaOme(o.sigla)}>
-                      <td><strong>{o.sigla}</strong></td>
+                      <td><strong>{o.sigla}</strong>{o.regional && <span className="nota"> · OME sede da região</span>}</td>
                       {!selRegiao && <td className="nota nowrap">{regioes.de(o.id).rotulo}</td>}
                       <td className="num">{x.existente}</td>
                       <td className="num">{x.previsto ?? '—'}</td>

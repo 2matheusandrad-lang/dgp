@@ -388,3 +388,20 @@ Script: `supabase/migrations/20261223000000_versao_1_4_1.sql`. Exige a 1.4, roda
 **Reverter:** `supabase/reverter_1_4_1.sql` devolve as funções e regras exatamente como na 1.4 (conferido por comparação) e remove o pecúlio geral.
 
 **Testes da 1.4.1:** aplicada, revertida e reaplicada; corpos das funções e regras de acesso idênticos aos da 1.4 depois da reversão; 11 recusas para o gestor (transferir, receber, incluir, comunicar desligamento, pedir correção, propor férias, situação funcional, punição, comportamento, nome de guerra, servidor civil) e as alterações que continuam com a OME (telefone, afastamento, formação, planilha com nome de guerra ignorado); pecúlio geral com 2.651 militares para gestor e leitor, ficha só nas próprias OMEs, anônimo bloqueado; fluxo no navegador por perfil.
+
+## 15. Versão 1.5 (menu, painel, regiões, pendências)
+
+Script: `supabase/migrations/20261224000000_versao_1_5.sql`. Exige a 1.4.1, roda numa transação, se recusa a rodar duas vezes e não apaga dados.
+
+| Assunto | O que muda |
+|---|---|
+| Menu | De até 20 para 10 itens: Painel, Efetivo (suas OMEs · pecúlio geral), Afastamentos, Férias (PAF), Comportamento, Movimentações (inclusões e transferências · desligamentos), Rotina mensal (1. conferência · 2. entrega), Indicadores (indicadores · regiões e mapa · QOD), Relatórios (relatórios prontos · consultas) e Administração (usuários e estrutura · QOD e almanaque · histórico · dicionário). As páginas do grupo aparecem como abas no topo; as rotas antigas continuam valendo. Ajuda e Dicionário de dados no rodapé |
+| Painel | Sem a faixa de pendências (ficam só no sino) |
+| Pendências | `minhas_pendencias` e `pendencias_extra` refeitas: a OME vê entrega mensal, conferência e militares sem seção; a DGP vê também situações funcionais vencendo, LTS longa, pedidos antigos, fechamento, QOD e todas as de férias. Saem os pedidos devolvidos e os retornos de afastamento (já no painel) |
+| Regiões | Cadeia de comando oficial gravada pelo script: DIM (GBI, GBMar, GBS, GBAPH), DINTER I (1º, 2º, 6º e 7º GB), DINTER II (3º, 4º, 5º e 9º GB) e DIESP (CAT RMR, Agreste, Zona da Mata e Sertão). A DIESP passa a ser regional. As regionais são OMEs e regiões ao mesmo tempo; nas telas, a OME sede aparece primeiro na sua região. Sai o botão de "sugestão de regiões" |
+| Visual | Tema "Grafite e sinal": menu claro, neutros frios, fonte Schibsted Grotesk (embutida no sistema, sem serviço externo), ações em tinta escura e o vermelho do CBMPE só no item ativo, no logotipo e nos alertas; modo escuro acompanha o do computador. Só aparência: telas, menus e funções iguais |
+| Erros | Erro não tratado em qualquer tela vira aviso no canto (nada falha em silêncio); a importação do PAF mostra o arquivo em leitura, aceita abas e títulos com variações e explica quando não consegue abrir a planilha |
+
+**Reverter:** `supabase/reverter_1_5.sql` devolve as funções de pendências da 1.4.1 e tira a DIESP das regiões; a cadeia de comando gravada fica (ajuste na tela, se preciso).
+
+**Testes da 1.5:** aplicada sobre a 1.4.1 com uma sugestão antiga errada já gravada (corrigida pelo script), recusa na 2ª vez, reversão e reaplicação; pendências por perfil (gestor só vê entrega, conferência e sem seção; DGP vê as demais); 29 verificações no navegador (menu e abas por perfil, regiões com DIESP, ficha, rodapé, aviso de erro, celular), sem erros de console.

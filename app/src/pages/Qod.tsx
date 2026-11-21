@@ -139,8 +139,8 @@ export default function Qod() {
                 <CartesianGrid stroke="var(--borda)" vertical={false} />
                 <XAxis dataKey="mes" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
                 <Tooltip /><Legend />
-                <Line type="monotone" dataKey="previsto" name="Previsto" stroke="#6b7280" strokeDasharray="5 4" isAnimationActive={false} />
-                <Line type="monotone" dataKey="existente" name="Existente" stroke="#8f1d1d" strokeWidth={2} isAnimationActive={false} />
+                <Line type="monotone" dataKey="previsto" name="Previsto" stroke="#98a2b3" strokeDasharray="5 4" isAnimationActive={false} />
+                <Line type="monotone" dataKey="existente" name="Existente" stroke="#c1272d" strokeWidth={2} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </Cartao>

@@ -9,6 +9,9 @@ do $$ begin
   if not exists (select 1 from versao_sistema where versao = '1.4.1') then
     raise exception 'A versão 1.4.1 não está aplicada neste banco.';
   end if;
+  if exists (select 1 from versao_sistema where versao = '1.5') then
+    raise exception 'Reverta antes a versão 1.5 (supabase/reverter_1_5.sql).';
+  end if;
 end $$;
 
 create or replace function pg_temp.trocar(p_funcao text, p_de text, p_para text) returns void

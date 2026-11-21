@@ -1,22 +1,28 @@
 import type { Dominios, Ome } from './dominios';
 
-// Regiões = OMEs marcadas como "regional" (DIM, DInter/1, DInter/2). A região de uma OME é a
-// primeira OME regional encontrada subindo pela cadeia de comando; sem nenhuma, "Demais OMEs".
+// Regiões = OMEs marcadas como "regional" (DIM, DInter/1, DInter/2 e DIEsp). Cada uma é OME (tem efetivo
+// próprio) e também dá nome a uma região: a região de uma OME é a primeira OME regional encontrada
+// subindo pela cadeia de comando (a própria regional inclusive); sem nenhuma, "Demais OMEs".
+//   DIM: GBI, GBMar, GBS, GBAPH · DINTER I: 1º, 2º, 6º e 7º GB · DINTER II: 3º, 4º, 5º e 9º GB · DIESP: os 4 CATs
 export const DEMAIS = 'Demais OMEs';
 
 export const rotuloRegiao = (sigla?: string | null) => {
   if (!sigla) return DEMAIS;
   const m = /^DInter\s*\/?\s*(\d)$/i.exec(sigla.trim());
   if (m) return 'DINTER ' + ['', 'I', 'II', 'III', 'IV'][Number(m[1])];
+  if (/^DIEsp$/i.test(sigla.trim())) return 'DIESP';
   return sigla;
 };
+// ordem fixa de apresentação das regiões
+const ORDEM_REGIAO: Record<string, number> = { DIM: 0, 'DINTER I': 1, 'DINTER II': 2, DIESP: 3 };
 
 export type Regiao = { id: number | null; sigla: string | null; rotulo: string; ordem: number };
 
 export function mapaRegioes(dom: Dominios | null) {
   const porId = new Map<number, Ome>((dom?.omes || []).map((o) => [o.id, o]));
   const cache = new Map<number, Regiao>();
-  const regionais = (dom?.omes || []).filter((o) => o.regional).sort((a, b) => a.ordem - b.ordem);
+  const regionais = (dom?.omes || []).filter((o) => o.regional)
+    .sort((a, b) => (ORDEM_REGIAO[rotuloRegiao(a.sigla)] ?? 9) - (ORDEM_REGIAO[rotuloRegiao(b.sigla)] ?? 9) || a.ordem - b.ordem);
   const ordem = new Map(regionais.map((o, i) => [o.id, i]));
   const de = (omeId: number | null | undefined): Regiao => {
     if (omeId == null) return { id: null, sigla: null, rotulo: DEMAIS, ordem: 99 };
@@ -50,10 +56,3 @@ export function municipioDe(dom: Dominios | null, omeId?: number | null, secaoId
   }
   return dom.omes.find((o) => o.id === omeId)?.municipio_ibge ?? null;
 }
-
-// Sugestão inicial de enquadramento (a confirmar pela DGP em Administração > Estrutura e regiões)
-export const SUGESTAO_REGIOES: Record<string, string[]> = {
-  DIM: ['GBI', 'GBAPH', 'GBMar', 'GBS', 'CAT/RMR'],
-  'DInter/1': ['1ºGB', '2ºGB', '6ºGB', '7ºGB', '9ºGB', 'CAT Agreste', 'CAT Zona da Mata'],
-  'DInter/2': ['3ºGB', '4ºGB', '5ºGB', 'CAT Sertão'],
-};

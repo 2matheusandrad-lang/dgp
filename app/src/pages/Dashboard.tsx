@@ -3,10 +3,9 @@ import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAx
 import { useAuth } from '../lib/auth';
 import { fmtCompetencia, fmtData, rpc } from '../lib/util';
 import { useConsulta } from '../lib/consulta';
-import { ListaPendencias } from '../components/Layout';
 import { Aviso, Badge, Cartao, Carregando, Kpi, Tabela, Vazio } from '../components/ui';
 
-const COR = { base: '#7f1d1d', afastado: '#d97706', grade: 'var(--borda)' };
+const COR = { base: '#5b6b82', afastado: '#f79009', grade: 'var(--borda)' };
 
 export default function Dashboard() {
   const { escopo, ctx, global } = useAuth();
@@ -40,8 +39,6 @@ export default function Dashboard() {
           <p className="sub">Situação em {fmtData(new Date().toISOString())} · {escopo ? ctx?.omes.find((o) => o.id === escopo)?.sigla : global ? 'todas as OMEs' : 'minhas OMEs'}</p>
         </div>
       </div>
-
-      <ListaPendencias />
 
       <div className="kpis">
         <Kpi rotulo="Efetivo ativo" valor={d.total.toLocaleString('pt-BR')} detalhe={`${d.operacional} operacional · ${d.administrativo} administrativo`} onClick={() => nav('/efetivo')} />

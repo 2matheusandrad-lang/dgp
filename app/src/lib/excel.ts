@@ -271,48 +271,87 @@ export type LinhaPafBruta = {
   aba: string; linha: number; anoAba: number; omeRecebida: string; matricula: string; nome: string; paf: string;
   previsto: string | null; diaIni: number | null; diaFim: number | null; mesGozo: string | null; sei: string; obs: string;
 };
-/** lê as abas "FÉRIAS AAAA" da planilha do PAF; nada é enviado ao servidor */
+/** lê as abas "FÉRIAS AAAA" da planilha do PAF; nada é enviado ao servidor.
+ *  Tolerante: aba "FÉRIAS 2025", "FERIAS-2025", "PAF 2025", "2025"...; cabeçalho até a linha 20;
+ *  coluna "MATRÍCULA", "MAT.", "Nº MATRÍCULA"... Se nenhuma aba tiver o ano no nome, usa as abas que têm a coluna MATRÍCULA. */
 export async function lerPlanilhaPaf(arquivo: File) {
+  const nomeArq = arquivo.name.toLowerCase();
+  if (/\.(xls|xlsb|ods|csv)$/.test(nomeArq)) {
+    throw new Error(`O arquivo "${arquivo.name}" não está no formato .xlsx. Abra-o no Excel, use Arquivo > Salvar como > "Pasta de Trabalho do Excel (*.xlsx)" e escolha o novo arquivo.`);
+  }
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(await arquivo.arrayBuffer());
-  const val = (v: any) => (v && typeof v === 'object' && 'result' in v ? v.result : v);
-  const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+  try { await wb.xlsx.load(await arquivo.arrayBuffer()); } catch {
+    throw new Error(`Não consegui abrir "${arquivo.name}". Confira se é um .xlsx sem senha: abra no Excel, tire a senha (se houver) e use Salvar como > "Pasta de Trabalho do Excel (*.xlsx)".`);
+  }
+  const val = (v: any) => {
+    if (v && typeof v === 'object') {
+      if ('result' in v) return v.result;
+      if (Array.isArray(v.richText)) return v.richText.map((t: any) => t.text).join('');
+      if ('text' in v && typeof v.text === 'string') return v.text;
+    }
+    return v;
+  };
+  const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[º°ª]/g, '').replace(/\s+/g, ' ').trim();
   const num = (v: any) => { const x = Number(texto(val(v)).replace(',', '.')); return Number.isFinite(x) && x > 0 ? Math.round(x) : null; };
+  const eMatricula = (t: string) => t === 'MATRICULA' || /^(N\.? ?|NO\.? ?|NUM\.? ?)?MATRICULA\b/.test(t) || /^MAT\.?$/.test(t) || /^MATR\.?$/.test(t);
+  const linhaTitulo = (ws: ExcelJS.Worksheet) => {
+    for (let r = 1; r <= Math.min(20, ws.rowCount || 20); r++) if ((ws.getRow(r).values as any[]).some((v) => eMatricula(norm(texto(val(v)))))) return r;
+    return 0;
+  };
   const linhas: LinhaPafBruta[] = []; const abas: string[] = []; const complementar: { matricula: string; nome: string; ome: string }[] = [];
+  const todas: string[] = [];
+  const anoDaAba = (nome: string) => {
+    const n = norm(nome);
+    const m = n.match(/^(?:FERIAS|PAF)\W*((?:19|20)\d{2})\b/) || n.match(/^((?:19|20)\d{2})$/) || n.match(/\b(?:FERIAS|PAF)\b\D*((?:19|20)\d{2})\b/);
+    return m ? Number(m[1]) : null;
+  };
+  const candidatas: { ws: ExcelJS.Worksheet; ano: number | null }[] = [];
   for (const ws of wb.worksheets) {
+    todas.push(ws.name);
     const nomeAba = norm(ws.name);
     if (nomeAba === 'CADASTRO COMPLEMENTAR') {
       ws.eachRow((row, n) => { if (n === 1) return; const mat = normMatricula(texto(val(row.getCell(1).value))); const nome = texto(val(row.getCell(4).value));
         if (mat && nome) complementar.push({ matricula: mat, nome, ome: texto(val(row.getCell(3).value)) }); });
       continue;
     }
-    const mAno = nomeAba.match(/^FERIAS (\d{4})$/);
-    if (!mAno) continue;
-    let lc = 0;
-    for (let r = 1; r <= 6 && !lc; r++) if ((ws.getRow(r).values as any[]).some((v) => norm(texto(val(v))) === 'MATRICULA')) lc = r;
+    candidatas.push({ ws, ano: anoDaAba(ws.name) });
+  }
+  // abas com o ano no nome; se não houver nenhuma, qualquer aba com a coluna MATRÍCULA (ano = o do nome do arquivo, ou o atual)
+  const comAno = candidatas.filter((c) => c.ano);
+  const anoArquivo = Number((norm(arquivo.name).match(/\b((?:19|20)\d{2})\b/) || [])[1]) || new Date().getFullYear();
+  const usar = comAno.length ? comAno.filter((c) => linhaTitulo(c.ws)) : candidatas.map((c) => ({ ...c, ano: anoArquivo }));
+  for (const { ws, ano } of usar) {
+    const lc = linhaTitulo(ws);
     if (!lc) continue;
     abas.push(ws.name);
     const tit = (ws.getRow(lc).values as any[]).map((v) => norm(texto(val(v))));
-    const col = (...nomes: string[]) => { for (const n of nomes) { const i = tit.findIndex((t) => t === n); if (i > 0) return i; } return 0; };
-    const cMat = col('MATRICULA'), cPrev = col('MES ADITAMENTO');
-    const c = {
-      ome: col('OME RECEBIDA'), nome: col('NOME'), paf: col('PAF'), sei: col('SEI'), obs: col('OBS'),
-      ini: col('DIA INICIO') || cPrev + 1, fim: col('DIA FIM') || cPrev + 2, gozo: col('MES GOZO', 'MES/ANO GOZO') || cPrev + 3,
+    const col = (...nomes: string[]) => {
+      for (const n of nomes) { const i = tit.findIndex((t) => t === n); if (i > 0) return i; }
+      for (const n of nomes) { const i = tit.findIndex((t) => !!t && t.startsWith(n)); if (i > 0) return i; }
+      return 0;
     };
+    const cMat = tit.findIndex((t) => !!t && eMatricula(t)), cPrev = col('MES ADITAMENTO', 'MES PREVISTO', 'MES DO ADITAMENTO');
+    const c = {
+      ome: col('OME RECEBIDA', 'OME'), nome: col('NOME COMPLETO', 'NOME'), paf: col('PAF', 'EXERCICIO'), sei: col('SEI', 'N SEI', 'PROCESSO SEI'), obs: col('OBS', 'OBSERVACAO', 'OBSERVACOES'),
+      ini: col('DIA INICIO', 'DIA INICIAL', 'INICIO') || (cPrev ? cPrev + 1 : 0), fim: col('DIA FIM', 'DIA FINAL', 'FIM') || (cPrev ? cPrev + 2 : 0),
+      gozo: col('MES GOZO', 'MES/ANO GOZO', 'MES DE GOZO') || (cPrev ? cPrev + 3 : 0),
+    };
+    const cel = (row: ExcelJS.Row, i: number) => (i > 0 ? val(row.getCell(i).value) : null);
     ws.eachRow((row, n) => {
       if (n <= lc) return;
-      const mat = normMatricula(texto(val(row.getCell(cMat).value)));
+      const mat = normMatricula(texto(cel(row, cMat)));
       if (!/\d/.test(mat)) return;
       linhas.push({
-        aba: ws.name, linha: n, anoAba: Number(mAno[1]), omeRecebida: texto(val(row.getCell(c.ome).value)), matricula: mat,
-        nome: texto(val(row.getCell(c.nome).value)), paf: texto(val(row.getCell(c.paf).value)),
-        previsto: cPrev ? dataCelula(val(row.getCell(cPrev).value)) : null,
-        diaIni: num(row.getCell(c.ini).value), diaFim: num(row.getCell(c.fim).value), mesGozo: dataCelula(val(row.getCell(c.gozo).value)),
-        sei: texto(val(row.getCell(c.sei).value)), obs: texto(val(row.getCell(c.obs).value)),
+        aba: ws.name, linha: n, anoAba: ano as number, omeRecebida: texto(cel(row, c.ome)), matricula: mat,
+        nome: texto(cel(row, c.nome)), paf: texto(cel(row, c.paf)),
+        previsto: cPrev ? dataCelula(cel(row, cPrev)) : null,
+        diaIni: c.ini ? num(row.getCell(c.ini).value) : null, diaFim: c.fim ? num(row.getCell(c.fim).value) : null,
+        mesGozo: c.gozo ? dataCelula(cel(row, c.gozo)) : null,
+        sei: texto(cel(row, c.sei)), obs: texto(cel(row, c.obs)),
       });
     });
   }
-  return { linhas, abas, complementar };
+  return { linhas, abas, complementar, todas };
 }
 
 // =====================================================================
