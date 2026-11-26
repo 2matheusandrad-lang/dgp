@@ -72,6 +72,7 @@ export default function Ferias() {
       {!gestaoGlobal && <p className="nota so-dgp">Consulta: o PAF, as reprogramações e o cadastro de servidores civis são lançados e alterados somente pela DGP.</p>}
       <Abas ativa={aba} onChange={setAba} abas={[
         { id: 'quadro', rotulo: 'Quadro de férias' },
+        { id: 'mes', rotulo: 'Por mês' },
         { id: 'reprogramacoes', rotulo: 'Reprogramações' },
         { id: 'pendencias', rotulo: 'Pendências' },
         { id: 'civis', rotulo: 'Servidores civis' },
@@ -82,6 +83,7 @@ export default function Ferias() {
         <Aviso tom="info">Nenhum exercício do PAF cadastrado ainda.{gestaoGlobal ? ' Abra o exercício em "Exercícios e regras" ou importe a planilha atual em "Importar planilha".' : ' A DGP abre o exercício e avisa as OMEs.'}</Aviso>
       ) : <>
         {aba === 'quadro' && exercicio && <Quadro exercicio={exercicio} f={filtros} setF={setFiltros} regiao={regiaoTela} setRegiao={setRegiaoTela} />}
+        {aba === 'mes' && exercicio && <PorMes exercicios={ex.dados} exercicio={exercicio} />}
         {aba === 'reprogramacoes' && <Reprogramacoes />}
         {aba === 'pendencias' && exercicio && <Pendencias exercicio={exercicio} />}
         {aba === 'civis' && <Civis />}
@@ -115,9 +117,13 @@ function usePessoas(ome: number | null) {
     ] as Pessoa[];
   }, 120_000);
 }
-function usePeriodos(ome: number | null, ini: string, fim: string) {
-  return useConsulta(`ferias|periodos|${ome}|${ini}|${fim}`, () => buscarTodos<Periodo>(() => {
-    let q = supabase.from('v_ferias').select('*').lte('data_inicio', fim).gte('data_fim', ini).order('data_inicio').order('id');
+// a justificativa da exceção é opcional na tela; o registro guarda que houve exceção mesmo sem texto
+const justificativa = (t: string) => t.trim() || 'Exceção registrada sem justificativa informada.';
+/** períodos que tocam ini..fim; com `ano`, também os desse PAF fora da janela (reprogramados ou acumulados para depois) */
+function usePeriodos(ome: number | null, ini: string, fim: string, ano?: number) {
+  return useConsulta(`ferias|periodos|${ome}|${ini}|${fim}|${ano ?? ''}`, () => buscarTodos<Periodo>(() => {
+    let q = supabase.from('v_ferias').select('*').order('data_inicio').order('id');
+    q = ano ? q.or(`and(data_inicio.lte.${fim},data_fim.gte.${ini}),exercicio.eq.${ano}`) : q.lte('data_inicio', fim).gte('data_fim', ini);
     if (ome) q = q.eq('ome_id', ome);
     return q;
   }), 60_000);
@@ -126,13 +132,95 @@ const useOmesEnsino = () => useConsulta('ferias|ensino', async () => {
   const { data } = await supabase.from('ome').select('id, orgao_ensino'); return new Set((data || []).filter((o: any) => o.orgao_ensino).map((o: any) => o.id as number));
 }, 300_000);
 
+// ======================================================================= por mês (todos os PAFs)
+/** quem está de férias num mês, de qualquer exercício: o PAF de cada período aparece numa coluna.
+ *  Os meses vão de dez do exercício mais antigo até dois anos depois do mais recente (gozo atrasado/acumulado). */
+function PorMes({ exercicios, exercicio }: { exercicios: any[]; exercicio: any }) {
+  const { escopo, gestaoGlobal } = useAuth();
+  const anos = exercicios.map((e) => e.ano as number);
+  const meses = useMemo(() => {
+    const ini = Math.min(...anos), fim = Math.max(...anos) + 2;
+    const out: string[] = [];
+    for (let a = ini; a <= fim; a++) for (let m = 1; m <= 12; m++) if (a > ini || m === 12) out.push(`${a}-${String(m).padStart(2, '0')}-01`);
+    return out;
+  }, [anos.join()]); // eslint-disable-line
+  const atual = hojeISO().slice(0, 8) + '01';
+  const [mes, setMes] = useState(meses.includes(atual) ? atual : meses[meses.length - 1]);
+  const [paf, setPaf] = useState('');
+  const [busca, setBusca] = useState('');
+  const [aberta, setAberta] = useState<{ pessoa: Pessoa; ano: number } | null>(null);
+  const fim = fimMesIso(mes);
+  const periodos = usePeriodos(escopo, mes, fim);
+  const i = meses.indexOf(mes);
+  const b = busca.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const linhas = (periodos.dados || [])
+    .filter((p) => ativo(p) && (!paf || String(p.exercicio) === paf)
+      && (!b || `${p.nome} ${p.nome_guerra || ''} ${p.matricula}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(b)))
+    .sort((x, y) => (x.ome_sigla || '').localeCompare(y.ome_sigla || '') || x.posto_ordem - y.posto_ordem
+      || (x.ordem_antiguidade ?? 9e9) - (y.ordem_antiguidade ?? 9e9) || x.data_inicio.localeCompare(y.data_inicio));
+  const pessoas = new Set(linhas.map((p) => p.pessoa_id)).size;
+  const porPaf = [...new Set(linhas.map((p) => p.exercicio as number))].sort().map((a) => `PAF ${a}: ${linhas.filter((p) => p.exercicio === a).length}`);
+  const pafsDoMes = [...new Set((periodos.dados || []).filter(ativo).map((p) => p.exercicio as number))].sort();
+  const cols = [
+    { titulo: 'Posto/Grad.', valor: (r: any) => r.posto_completo, largura: 12 }, { titulo: 'Matrícula', valor: (r: any) => r.matricula, largura: 11 },
+    { titulo: 'Nome', valor: (r: any) => r.nome, largura: 34 }, ...(escopo ? [] : [{ titulo: 'OME', valor: (r: any) => r.ome_sigla, largura: 10 }]),
+    { titulo: 'Seção', valor: (r: any) => r.secao_nome || '', largura: 16 },
+    { titulo: 'Início', valor: (r: any) => fmtData(r.data_inicio), largura: 11 }, { titulo: 'Fim', valor: (r: any) => fmtData(r.data_fim), largura: 11 },
+    { titulo: 'Dias', valor: (r: any) => diasEfetivos(r), largura: 6 }, { titulo: 'PAF', valor: (r: any) => r.exercicio, largura: 7 },
+    { titulo: 'Situação', valor: (r: any) => STATUS[r.status]?.rotulo, largura: 12 }, { titulo: 'Origem', valor: (r: any) => ORIGEM[r.origem] || r.origem, largura: 18 },
+  ];
+  const titulo = `De férias em ${rotuloMes(mes)}`;
+  const sub = [escopo ? linhas[0]?.ome_sigla || '' : 'todas as OMEs', paf ? `PAF ${paf}` : 'todos os PAFs', `${pessoas} pessoa(s)`].filter(Boolean).join(' · ');
+  const arq = `ferias_${mes.slice(0, 7)}${paf ? `_PAF${paf}` : ''}`;
+  return <>
+    <div className="filtros">
+      <div className="campo">
+        <span className="campo-rotulo">Mês</span>
+        <span className="mes-nav">
+          <Botao type="button" variante="fantasma" aria-label="Mês anterior" disabled={i <= 0} onClick={() => setMes(meses[i - 1])}>‹</Botao>
+          <select value={mes} onChange={(e) => setMes(e.target.value)} aria-label="Mês">{meses.map((m) => <option key={m} value={m}>{rotuloMes(m)}</option>)}</select>
+          <Botao type="button" variante="fantasma" aria-label="Próximo mês" disabled={i >= meses.length - 1} onClick={() => setMes(meses[i + 1])}>›</Botao>
+        </span>
+      </div>
+      <Campo rotulo="PAF"><select value={paf} onChange={(e) => setPaf(e.target.value)}>
+        <option value="">Todos os PAFs</option>{[...new Set([...pafsDoMes, ...anos])].sort((a, z) => z - a).map((a) => <option key={a} value={a}>PAF {a}</option>)}
+      </select></Campo>
+      <Campo rotulo="Buscar"><input placeholder="Nome ou matrícula" value={busca} onChange={(e) => setBusca(e.target.value)} /></Campo>
+      <div className="acoes-filtro">
+        <Botao pequeno disabled={!linhas.length} onClick={() => exportarPdf(arq, titulo, sub, cols, linhas, escopo ? undefined : (r: any) => r.ome_sigla)}>PDF</Botao>
+        <Botao pequeno disabled={!linhas.length} onClick={() => exportarXlsx(arq, titulo, cols, linhas, escopo ? undefined : (r: any) => r.ome_sigla)}>Excel</Botao>
+      </div>
+    </div>
+    <p className="resumo-recorte" aria-live="polite"><strong>{pessoas}</strong> pessoa(s) de férias em {rotuloMes(mes)}{porPaf.length ? ` · ${porPaf.join(' · ')}` : ''}{escopo ? '' : ' · todas as OMEs'}</p>
+    {periodos.erro && <Aviso tom="erro">{periodos.erro}</Aviso>}
+    {!periodos.dados ? <Carregando /> : (
+      <Tabela linhas={linhas} chave={(r: any) => r.id} compacta porPagina={100} vazio={`Ninguém de férias em ${rotuloMes(mes)}${paf ? ` pelo PAF ${paf}` : ''}.`}
+        onLinha={(r: any) => setAberta({ ano: r.exercicio, pessoa: { id: r.pessoa_id, tipo: r.tipo_pessoa, matricula: r.matricula, nome: r.nome, nome_guerra: r.nome_guerra,
+          posto_completo: r.posto_completo, posto_ordem: r.posto_ordem, ordem_antiguidade: r.ordem_antiguidade, ome_id: r.ome_id, ome_sigla: r.ome_sigla } })}
+        colunas={[
+          { id: 'posto', titulo: 'Militar / servidor', valor: (r: any) => r.posto_ordem * 1e6 + (r.ordem_antiguidade ?? 9e5), render: (r: any) => <><strong>{r.posto_completo}</strong> {r.nome}<div className="nota">{r.matricula}</div></> },
+          ...(escopo ? [] : [{ id: 'ome_sigla', titulo: 'OME', valor: (r: any) => r.ome_sigla }]),
+          { id: 'secao_nome', titulo: 'Seção', valor: (r: any) => r.secao_nome || '' },
+          { id: 'data_inicio', titulo: 'Início', valor: (r: any) => r.data_inicio, render: (r: any) => fmtData(r.data_inicio) },
+          { id: 'data_fim', titulo: 'Fim', valor: (r: any) => r.data_fim, render: (r: any) => fmtData(r.data_fim) },
+          { id: 'dias', titulo: 'Dias', valor: (r: any) => diasEfetivos(r), render: (r: any) => (r.situacao === 'INTERROMPIDA' ? `${r.dias_gozados} de ${r.dias}` : r.dias) },
+          { id: 'exercicio', titulo: 'PAF', valor: (r: any) => r.exercicio, render: (r: any) => <Badge tom={r.exercicio === exercicio.ano ? 'azul' : 'neutro'}>PAF {r.exercicio}</Badge> },
+          { id: 'status', titulo: 'Situação', valor: (r: any) => r.status, render: (r: any) => <Badge tom={STATUS[r.status]?.tom}>{STATUS[r.status]?.rotulo}</Badge> },
+          { id: 'origem', titulo: 'Origem', valor: (r: any) => r.origem, render: (r: any) => <span className="nota">{ORIGEM[r.origem] || r.origem}</span> },
+        ]} />
+    )}
+    <p className="nota">Mostra todos os períodos que tocam o mês, de qualquer PAF: férias de um exercício gozadas depois da janela (reprogramação ou acúmulo) também aparecem. Clique numa linha para ver os períodos da pessoa.</p>
+    {aberta && <PessoaFerias pessoa={aberta.pessoa} exercicio={exercicios.find((e) => e.ano === aberta.ano) || exercicio} editavel={gestaoGlobal} onFechar={() => setAberta(null)} />}
+  </>;
+}
+
 // ======================================================================= quadro
 function Quadro({ exercicio, f, setF, regiao, setRegiao }: { exercicio: any; f: FiltrosFerias; setF: (f: FiltrosFerias) => void; regiao: string; setRegiao: (r: string) => void }) {
   const { escopo, setEscopo, gestaoGlobal } = useAuth();
   const meses = janela(exercicio.ano);
   const ini = meses[0], fim = fimMesIso(meses[12]);
   const pessoas = usePessoas(escopo);
-  const periodos = usePeriodos(escopo, ini, fim);
+  const periodos = usePeriodos(escopo, ini, fim, exercicio.ano);
   const ensino = useOmesEnsino();
   const muda = (k: keyof FiltrosFerias, v: string) => setF({ ...f, [k]: v });
   const [aberta, setAberta] = useState<Pessoa | null>(null);
@@ -221,7 +309,10 @@ function Quadro({ exercicio, f, setF, regiao, setRegiao }: { exercicio: any; f: 
             return (
               <tr key={p.id} className="clicavel" tabIndex={0} aria-label={`${p.posto_completo} ${p.nome}: ${d} dias no PAF ${exercicio.ano}`}
                 onClick={() => setAberta(p)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAberta(p); } }}>
-                <td className="fix"><strong>{p.posto_completo}</strong> {p.nome_guerra || p.nome}</td>
+                <td className="fix"><strong>{p.posto_completo}</strong> {p.nome_guerra || p.nome}
+                  {ps.filter((x) => x.exercicio === exercicio.ano && (x.data_fim < ini || x.data_inicio > fim)).map((x) => (
+                    <span key={x.id} className="fora-janela" title={`PAF ${x.exercicio}: ${fmtData(x.data_inicio)} a ${fmtData(x.data_fim)} (${STATUS[x.status]?.rotulo}), fora da janela deste quadro`}>
+                      {diasEfetivos(x)}d em {rotuloMes(x.data_inicio.slice(0, 8) + '01')}</span>))}</td>
                 {meses.map((m) => {
                   const f = fimMesIso(m);
                   const aqui = ps.filter((x) => sobrepoe(x, m, f));
@@ -513,7 +604,7 @@ function EditorProposta({ pessoa, exercicio, atuais, onFechar, onFeito }: { pess
   const bloq = (ver || []).filter((x) => x.nivel === 'bloqueio').length;
   const salvar = async () => {
     setErro(null);
-    try { await rpc('ferias_propor', { ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_periodos: novos, p_excecao: bloq ? exc : null, p_observacao: obs || null });
+    try { await rpc('ferias_propor', { ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_periodos: novos, p_excecao: bloq ? justificativa(exc) : null, p_observacao: obs || null });
       toast(bloq ? (gestaoGlobal ? 'Proposta salva com exceção autorizada.' : 'Proposta salva; a exceção vai para o Diretor da DGP.') : 'Proposta salva.'); onFeito(); }
     catch (e) { setErro(msgErro(e)); }
   };
@@ -521,10 +612,10 @@ function EditorProposta({ pessoa, exercicio, atuais, onFechar, onFeito }: { pess
     <Modal aberto largo titulo={`Proposta do PAF ${exercicio.ano} · ${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}
       rodape={<><Botao onClick={onFechar}>Voltar</Botao>
         {atuais.length > 0 && <Botao variante="fantasma" onClick={async () => { try { await rpc('ferias_propor', { ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_periodos: [] }); toast('Proposta removida.'); onFeito(); } catch (e) { setErro(msgErro(e)); } }}>Remover proposta</Botao>}
-        <Botao variante="primario" disabled={!ver || (bloq > 0 && !exc.trim())} onClick={salvar}>{bloq ? 'Salvar com pedido de exceção' : 'Salvar proposta'}</Botao></>}>
+        <Botao variante="primario" disabled={!ver} onClick={salvar}>{bloq ? 'Salvar com pedido de exceção' : 'Salvar proposta'}</Botao></>}>
       <SeletorPeriodos ano={exercicio.ano} valor={novos} onChange={setNovos} livre={gestaoGlobal} />
       <ListaVerificacoes v={ver} />
-      {bloq > 0 && <Campo rotulo="Justificativa da exceção *" largura="inteira" dica="Casos excepcionais são decididos pelo Diretor da DGP.">
+      {bloq > 0 && <Campo rotulo="Justificativa da exceção (opcional)" largura="inteira" dica="Casos excepcionais são decididos pelo Diretor da DGP.">
         <textarea rows={2} value={exc} onChange={(e) => setExc(e.target.value)} /></Campo>}
       <Campo rotulo="Observação" largura="inteira"><input value={obs} onChange={(e) => setObs(e.target.value)} /></Campo>
       {erro && <Aviso tom="erro">{erro}</Aviso>}
@@ -545,17 +636,17 @@ function EditorInclusao({ pessoa, exercicio, diasAtuais, onFechar, onFeito }: { 
   const salvar = async () => {
     setErro(null);
     try {
-      await rpc('ferias_incluir', { ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_periodos: novos, p_publicacao: pub || null, p_processo: sei || null, p_excecao: bloq ? exc : null, p_observacao: obs || null });
+      await rpc('ferias_incluir', { ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_periodos: novos, p_publicacao: pub || null, p_processo: sei || null, p_excecao: bloq ? justificativa(exc) : null, p_observacao: obs || null });
       toast(`Período incluído no PAF ${exercicio.ano}${pessoa.tipo === 'MILITAR' ? ' e lançado como afastamento' : ''}.`); onFeito();
     } catch (e) { setErro(msgErro(e)); }
   };
   return (
     <Modal aberto largo titulo={`Incluir período · PAF ${exercicio.ano} · ${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}
-      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || (!pub.trim() && !sei.trim()) || (bloq > 0 && !exc.trim())} onClick={salvar}>{bloq ? 'Incluir com exceção' : 'Incluir período'}</Botao></>}>
+      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || (!pub.trim() && !sei.trim())} onClick={salvar}>{bloq ? 'Incluir com exceção' : 'Incluir período'}</Botao></>}>
       <p className="nota">{diasAtuais} dia(s) já lançados no PAF {exercicio.ano}; saldo de {saldo}. O período entra como programado e vira afastamento "Férias".</p>
       <SeletorPeriodos ano={exercicio.ano} valor={novos} onChange={setNovos} livre />
       <ListaVerificacoes v={ver} />
-      {bloq > 0 && <Campo rotulo="Justificativa da exceção *" largura="inteira" dica="Fica registrada como exceção autorizada pela DGP."><textarea rows={2} value={exc} onChange={(e) => setExc(e.target.value)} /></Campo>}
+      {bloq > 0 && <Campo rotulo="Justificativa da exceção (opcional)" largura="inteira" dica="Fica registrada como exceção autorizada pela DGP."><textarea rows={2} value={exc} onChange={(e) => setExc(e.target.value)} /></Campo>}
       <div className="form-grade">
         <Campo rotulo="Publicação" dica="Nota ou BGE da inclusão. Informe esta ou o SEI."><input value={pub} onChange={(e) => setPub(e.target.value)} placeholder="Nota nº 000/26-DGP ou BGE nº 000/2026" /></Campo>
         <Campo rotulo="Processo SEI"><input value={sei} onChange={(e) => setSei(e.target.value)} placeholder="3900000000.000000/2026-00" /></Campo>
@@ -608,7 +699,7 @@ function EditorReprogramacao({ pessoa, exercicio, periodos, inicial, onFechar, o
         ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_tipo: tipo, p_motivo: motivo || null,
         p_requerimento: tipo === 'A_PEDIDO' || tipo === 'DE_OFICIO' ? req : null, p_processo: sei, p_publicacao_ome: pub || null,
         p_cancelar: interrupcao ? [] : cancelar, p_novos: novos, p_interromper: interrupcao ? interromper || null : null,
-        p_interrupcao_em: interrupcao ? intEm : null, p_excecao: bloq ? exc : null, p_observacao: obs || null,
+        p_interrupcao_em: interrupcao ? intEm : null, p_excecao: bloq ? justificativa(exc) : null, p_observacao: obs || null,
       };
       if (homologar) {
         await rpc('ferias_reprogramar_homologar', { ...args, p_publicacao_dgp: pubDgp });
@@ -622,7 +713,7 @@ function EditorReprogramacao({ pessoa, exercicio, periodos, inicial, onFechar, o
   };
   return (
     <Modal aberto largo titulo={`${interrupcao ? 'Interrupção' : 'Reprogramação'} · PAF ${exercicio.ano} · ${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}
-      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || !sei.trim() || (bloq > 0 && !exc.trim()) || (homologar && !pubDgp.trim())} onClick={enviar}>{homologar ? (bloq ? 'Registrar e homologar com exceção' : 'Registrar e homologar') : 'Registrar para homologar depois'}</Botao></>}>
+      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || !sei.trim() || (homologar && !pubDgp.trim())} onClick={enviar}>{homologar ? (bloq ? 'Registrar e homologar com exceção' : 'Registrar e homologar') : 'Registrar para homologar depois'}</Botao></>}>
       <div className="form-grade">
         <Campo rotulo="Tipo *" largura="meia">
           <select value={tipo} onChange={(e) => { setTipo(e.target.value); setNovos([]); setMotivo(''); }}>
@@ -660,7 +751,7 @@ function EditorReprogramacao({ pessoa, exercicio, periodos, inicial, onFechar, o
       <h4>Novo período</h4>
       <SeletorPeriodos key={tipo + interromper} ano={exercicio.ano} valor={novos} onChange={setNovos} livre />
       <ListaVerificacoes v={ver ? verF : null} />
-      {bloq > 0 && <Campo rotulo="Justificativa da exceção *" largura="inteira" dica="Casos excepcionais são decididos pelo Diretor da DGP."><textarea rows={2} value={exc} onChange={(e) => setExc(e.target.value)} /></Campo>}
+      {bloq > 0 && <Campo rotulo="Justificativa da exceção (opcional)" largura="inteira" dica="Casos excepcionais são decididos pelo Diretor da DGP."><textarea rows={2} value={exc} onChange={(e) => setExc(e.target.value)} /></Campo>}
       <Campo rotulo="Observação" largura="inteira" dica="Não registre diagnóstico ou CID (LGPD)."><input value={obs} onChange={(e) => setObs(e.target.value)} /></Campo>
       <p className="nota">Afastamentos de saúde, luto, maternidade, paternidade e núpcias durante as férias não as interrompem (art. 11, § 3º).</p>
       {erro && <Aviso tom="erro">{erro}</Aviso>}
@@ -770,7 +861,7 @@ function Pendencias({ exercicio }: { exercicio: any }) {
   const toast = useToast();
   const meses = janela(exercicio.ano);
   const pessoas = usePessoas(escopo);
-  const periodos = usePeriodos(escopo, meses[0], fimMesIso(meses[12]));
+  const periodos = usePeriodos(escopo, meses[0], fimMesIso(meses[12]), exercicio.ano);
   const [aberta, setAberta] = useState<Pessoa | null>(null);
   if (!pessoas.dados || !periodos.dados) return <Carregando />;
   const doEx = periodos.dados.filter((p: any) => p.exercicio === exercicio.ano && ativo(p));

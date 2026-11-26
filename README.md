@@ -424,3 +424,14 @@ Script: `supabase/migrations/20261225000000_versao_1_6.sql`. Exige a 1.5, roda n
 **Reverter:** `supabase/reverter_1_6.sql` (antes de reverter a 1.5). Nenhum período é apagado: os de origem INCLUSAO passam a constar como PAF.
 
 **Testes da 1.6:** inclusão em PAF publicado e em elaboração, recusa sem publicação/SEI e para gestor, reprogramação homologada, recusa na 2ª vez, reversão e reaplicação; 60 verificações no navegador (inclusão, PAF de referência, teclado, os 7 relatórios baixados, .csv conferido campo a campo contra o modelo, abrangência por CBMPE, região e OMEs escolhidas com contagens conferidas, filtros herdados do quadro, perfil gestor), sem erros de console.
+
+### 16.1 Versão 1.6.1 (só o site, sem SQL)
+
+| Assunto | O que muda |
+|---|---|
+| Férias por mês | Aba **Por mês** na tela de Férias: escolhe qualquer mês (de dez do PAF mais antigo até dois anos depois do mais recente) e lista quem está de férias, de qualquer PAF, com a coluna PAF, início, fim, dias, situação e origem; filtro por PAF, busca, PDF/Excel e clique para abrir a pessoa já no PAF do período. O relatório "De férias em um mês" segue a mesma regra |
+| Gozo fora da janela | O quadro e as pendências passam a contar os períodos do PAF gozados depois da janela (reprogramação ou acúmulo, até 2 períodos, art. 6º): a linha mostra, por exemplo, "30d em mar/27" e a pessoa deixa de aparecer como "sem previsão" |
+| Justificativa da exceção | Opcional na proposta, na inclusão e na reprogramação. Sem texto, o registro guarda "Exceção registrada sem justificativa informada." (o banco continua marcando que houve exceção) |
+| Janelas abertas | Sair da aba do navegador e voltar não fecha mais janelas nem apaga o que foi digitado (o Supabase avisa "SIGNED_IN" ao voltar e o sistema recarregava a tela inteira) |
+
+**Testes da 1.6.1:** 14 verificações novas no navegador (aba Por mês com PAF 2024, 2025 e 2026 no mesmo mês, navegação, filtro, exportação, abertura no PAF do período, janela e texto digitado preservados ao trocar de aba — o defeito foi reproduzido na versão anterior —, reprogramação com bloqueio gravada sem justificativa) e as 89 verificações anteriores.

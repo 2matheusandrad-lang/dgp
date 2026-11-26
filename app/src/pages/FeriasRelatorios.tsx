@@ -3,10 +3,11 @@
 // Abrangência (todo o CBMPE, uma região ou OMEs escolhidas) e filtros valem para todos.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../lib/auth';
+import { supabase } from '../lib/supabase';
 import { secoesDa, useDominios } from '../lib/dominios';
 import { mapaRegioes } from '../lib/regioes';
-import { exportarPdf, exportarXlsx, fmtData, hojeISO, msgErro, rpc } from '../lib/util';
-import { STATUS, ativo, diasEfetivos, janela, rotuloMes } from '../lib/ferias';
+import { buscarTodos, exportarPdf, exportarXlsx, fmtData, hojeISO, msgErro, rpc } from '../lib/util';
+import { ORIGEM, STATUS, ativo, diasEfetivos, janela, rotuloMes } from '../lib/ferias';
 import { FILTROS_VAZIOS, SITUACOES_EX, contarFiltros, descreverFiltros, passaFiltro, type FiltrosFerias } from '../lib/feriasFiltros';
 import { invalidar } from '../lib/consulta';
 import { Aviso, Botao, Campo, Carregando, Modal, useToast } from '../components/ui';
@@ -20,7 +21,7 @@ const OPCOES: { id: Tipo; rotulo: string; desc: string; dgp?: boolean }[] = [
   { id: 'completo', rotulo: 'Relação completa (cópia do PAF)', desc: 'Excel com todas as informações: resumo por pessoa, todos os períodos (inclusive reprogramados, interrompidos e não gozados), reprogramações e dados do exercício. Serve de cópia de segurança.' },
   { id: 'resumo', rotulo: 'Resumo por região e OME', desc: 'Uma linha por OME, com subtotais por região: efetivo, 30 dias programados, menos de 30, sem previsão, em gozo hoje, pico mensal e meses acima do limite de 10%. PDF ou Excel.' },
   { id: 'mapa', rotulo: 'Mapa mensal', desc: 'Excel com o quadro de férias: uma linha por pessoa, uma coluna por mês e o total em férias em cada mês.' },
-  { id: 'mes', rotulo: 'De férias em um mês', desc: 'Quem está de férias no mês escolhido, com início, fim e dias. Útil para escalas. PDF ou Excel.' },
+  { id: 'mes', rotulo: 'De férias em um mês', desc: 'Quem está de férias no mês escolhido, de qualquer PAF (o PAF vem numa coluna), com início, fim e dias. Útil para escalas. PDF ou Excel.' },
   { id: 'pendencias', rotulo: 'Pendências do exercício', desc: 'Sem previsão, com menos de 30 dias, com exceção pendente ou com dia estimado. PDF ou Excel.' },
   { id: 'sad', rotulo: 'Lote do SGP (layout SAD)', desc: 'Arquivo .csv para a transação 131 do SGP ("Atualização de gozo de férias em lote") e a planilha GERAL_layout_ferias_importacao para conferência.', dgp: true },
 ];
@@ -35,10 +36,13 @@ export default function RelatoriosFerias({ exercicio, filtrosTela = FILTROS_VAZI
   const toast = useToast();
   const regioes = useMemo(() => mapaRegioes(dom), [dom]);
   const meses = janela(exercicio.ano);
+  // "de férias em um mês" não depende do PAF: do dez anterior a dois anos depois (gozo reprogramado ou acumulado)
+  const mesesAmplos = useMemo(() => [...janela(exercicio.ano - 1).slice(0, 12), ...meses, ...janela(exercicio.ano + 1).slice(1), ...janela(exercicio.ano + 2).slice(1)], [exercicio.ano]); // eslint-disable-line
   const [tipo, setTipo] = useState<Tipo>('simples');
   const [erro, setErro] = useState<string | null>(null);
   const [gerando, setGerando] = useState(false);
   const [mes, setMes] = useState(() => { const h = new Date().toISOString().slice(0, 8) + '01'; return meses.includes(h) ? h : meses[0]; });
+  const [doMes, setDoMes] = useState<{ chave: string; linhas: any[] } | null>(null);
   const [sad, setSad] = useState<OpcoesSad | null>(null);
   const [mod, setMod] = useState<typeof import('../lib/feriasRelatorios') | null>(null);
   const [f, setF] = useState<FiltrosFerias>({ ...filtrosTela, busca: '' });
@@ -99,6 +103,19 @@ export default function RelatoriosFerias({ exercicio, filtrosTela = FILTROS_VAZI
     return { pessoas, periodos, reprog, base };
   }, [dados, selecionadas, f, nFiltros, regioes, ordemOme, exercicio.ano]);
 
+  // ----------------------------------------------------------- períodos do mês, de qualquer PAF
+  const chaveMes = `${mes}|${chave}`;
+  useEffect(() => {
+    if (tipo !== 'mes' || doMes?.chave === chaveMes) return;
+    let vivo = true; const fm = fimMes(mes);
+    buscarTodos<any>(() => {
+      let q = supabase.from('v_ferias').select('*').lte('data_inicio', fm).gte('data_fim', mes).in('situacao', ['PROPOSTA', 'PROGRAMADA', 'INTERROMPIDA']).order('data_inicio').order('id');
+      if (unica != null) q = q.eq('ome_id', unica);
+      return q;
+    }).then((linhas) => { if (vivo) setDoMes({ chave: chaveMes, linhas }); }).catch((e) => vivo && setErro(msgErro(e)));
+    return () => { vivo = false; };
+  }, [tipo, chaveMes]); // eslint-disable-line
+
   // ----------------------------------------------------------- textos
   const siglas = permitidas.filter((o) => selecionadas.has(o.id)).map((o) => o.sigla);
   const abrTxt = abr.modo === 'todas' ? (global ? 'todo o CBMPE' : 'todas as suas OMEs')
@@ -134,16 +151,22 @@ export default function RelatoriosFerias({ exercicio, filtrosTela = FILTROS_VAZI
     else await exportarXlsx(nomeArq(''), t, cols, pp, grupo);
   });
   const noMes = (fmt: 'pdf' | 'xlsx') => exec(async () => {
-    const fm = fimMes(mes);
-    const linhas = recorte!.periodos.filter((p) => ativo(p) && p.data_inicio <= fm && p.data_fim >= mes);
+    if (!doMes || doMes.chave !== chaveMes) throw new Error('Aguarde: carregando os períodos do mês.');
+    const ids = new Set(recorte!.pessoas.map((p) => p.id));
+    const ordem = new Map(recorte!.pessoas.map((p, i) => [p.id, i]));
+    const linhas = doMes.linhas
+      .filter((p) => selecionadas.has(p.ome_id) && (!nFiltros || ids.has(p.pessoa_id)))
+      .map((p) => ({ ...p, regiao: regioes.de(p.ome_id).rotulo, _o: ordem.get(p.pessoa_id) ?? 1e9, _om: ordemOme.get(p.ome_id) ?? 999 }))
+      .sort((a, b) => a._om - b._om || a._o - b._o || a.data_inicio.localeCompare(b.data_inicio));
     const cols = [
       { titulo: 'Posto/Grad.', valor: (r: any) => r.posto_completo, largura: 12 }, { titulo: 'Matrícula', valor: (r: any) => r.matricula, largura: 11 },
       { titulo: 'Nome', valor: (r: any) => r.nome, largura: 36 }, ...colsLocal,
       { titulo: 'Seção', valor: (r: any) => r.secao_nome || '', largura: 16 },
       { titulo: 'Início', valor: (r: any) => fmtData(r.data_inicio), largura: 11 }, { titulo: 'Fim', valor: (r: any) => fmtData(r.data_fim), largura: 11 },
-      { titulo: 'Dias', valor: (r: any) => diasEfetivos(r), largura: 6 }, { titulo: 'Situação', valor: (r: any) => STATUS[r.status]?.rotulo, largura: 12 },
+      { titulo: 'Dias', valor: (r: any) => diasEfetivos(r), largura: 6 }, { titulo: 'PAF', valor: (r: any) => r.exercicio, largura: 7 },
+      { titulo: 'Situação', valor: (r: any) => STATUS[r.status]?.rotulo, largura: 12 }, { titulo: 'Origem', valor: (r: any) => ORIGEM[r.origem] || r.origem, largura: 16 },
     ];
-    const t = `De férias em ${rotuloMes(mes)} — PAF ${exercicio.ano}`;
+    const t = `De férias em ${rotuloMes(mes)} — todos os PAFs`;
     const arq = `ferias_${mes.slice(0, 7)}${sufixo}`;
     if (fmt === 'pdf') await exportarPdf(arq, t, sub(`${linhas.length} período(s)`), cols, linhas, grupo);
     else await exportarXlsx(arq, t, cols, linhas, grupo);
@@ -224,7 +247,7 @@ export default function RelatoriosFerias({ exercicio, filtrosTela = FILTROS_VAZI
   useEffect(() => { if (unica == null && f.secao) setF((x) => ({ ...x, secao: '' })); }, [unica]); // eslint-disable-line
 
   const visiveis = OPCOES.filter((o) => !o.dgp || gestaoGlobal);
-  const pronto = !!recorte && selecionadas.size > 0;
+  const pronto = !!recorte && selecionadas.size > 0 && (tipo !== 'mes' || doMes?.chave === chaveMes);
   const botoes = (fn: (fmt: 'pdf' | 'xlsx') => void) => <><Botao disabled={gerando || !pronto} onClick={() => fn('pdf')}>PDF</Botao><Botao variante="primario" disabled={gerando || !pronto} onClick={() => fn('xlsx')}>Excel</Botao></>;
   return (
     <Modal aberto largo titulo={`Relatórios de férias · PAF ${exercicio.ano}`} onFechar={onFechar} rodape={<>
@@ -321,7 +344,7 @@ export default function RelatoriosFerias({ exercicio, filtrosTela = FILTROS_VAZI
           : <p className="resumo-recorte" aria-live="polite"><strong>{recorte.pessoas.length}</strong> militar(es)/servidor(es) · {abrTxt}{filtrosTxt ? ` · ${filtrosTxt}` : ''}</p>}
 
       {recorte && tipo === 'mes' && <div className="form-grade">
-        <Campo rotulo="Mês"><select value={mes} onChange={(e) => setMes(e.target.value)}>{meses.map((m) => <option key={m} value={m}>{rotuloMes(m)}</option>)}</select></Campo>
+        <Campo rotulo="Mês" dica="Inclui férias de qualquer PAF que toquem o mês"><select value={mes} onChange={(e) => setMes(e.target.value)}>{mesesAmplos.map((m) => <option key={m} value={m}>{rotuloMes(m)}</option>)}</select></Campo>
       </div>}
       {lote && sad && <>
         <h4>Quais períodos</h4>

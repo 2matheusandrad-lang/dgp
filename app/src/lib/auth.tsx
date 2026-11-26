@@ -54,13 +54,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session); carregarContexto(data.session); });
+    // O Supabase repete "SIGNED_IN" quando a aba volta a ficar visível. Recarregar a tela inteira nesse momento
+    // fechava janelas abertas e perdia o que estava sendo digitado: só mostra "carregando" se o usuário mudou.
+    let usuario: string | null = null;
+    supabase.auth.getSession().then(({ data }) => { usuario = data.session?.user.id ?? null; setSession(data.session); carregarContexto(data.session); });
     const { data: sub } = supabase.auth.onAuthStateChange((evento, s) => {
-      setSession(s);
-      if (evento === 'SIGNED_IN' || evento === 'SIGNED_OUT' || evento === 'USER_UPDATED') {
-        setCarregando(true);
-        carregarContexto(s);
+      const novo = s?.user.id ?? null;
+      const trocou = novo !== usuario;
+      usuario = novo;
+      if (evento === 'TOKEN_REFRESHED' || (evento === 'SIGNED_IN' && !trocou)) {
+        setSession((atual) => (atual?.access_token === s?.access_token ? atual : s));   // só o token novo, sem recarregar
+        return;
       }
+      setSession(s);
+      if (evento === 'SIGNED_IN' || evento === 'SIGNED_OUT') { setCarregando(true); carregarContexto(s); }
+      else if (evento === 'USER_UPDATED') carregarContexto(s);                         // atualiza ao fundo
     });
     return () => sub.subscription.unsubscribe();
   }, [carregarContexto]);
