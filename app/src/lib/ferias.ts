@@ -20,6 +20,7 @@ export const TIPO_REPROG: Record<string, string> = {
   A_PEDIDO: 'A pedido do militar (art. 11, II, a)', DE_OFICIO: 'De ofício pelo titular da OME (art. 11, II, b)',
   OBRIGATORIA: 'Obrigatória (art. 11, I)', INTERRUPCAO: 'Interrupção (art. 10)',
 };
+export const ORIGEM: Record<string, string> = { PAF: 'Proposta do PAF', REPROGRAMACAO: 'Reprogramação', IMPORTACAO: 'Importação da planilha', INCLUSAO: 'Inclusão pela DGP' };
 export const MOTIVOS_ART10 = ['Interesse da Segurança Nacional (art. 10, I)', 'Manutenção da ordem pública (art. 10, II)',
   'Extrema necessidade do serviço (art. 10, III)', 'Transferência para a inatividade (art. 10, IV)'];
 export const MOTIVO_JA_AFASTADO = 'Militar já afastado no 1º dia das férias (art. 11, I, b)';

@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, ReactNode, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 // ---------------- botões e campos ----------------
 type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & { variante?: 'primario' | 'secundario' | 'perigo' | 'fantasma'; pequeno?: boolean };
@@ -69,11 +69,23 @@ export function Modal({ titulo, aberto, onFechar, children, rodape, largo }: { t
     window.addEventListener('keydown', f);
     return () => window.removeEventListener('keydown', f);
   }, [aberto, onFechar]);
+  const idTitulo = useId();
+  const caixa = useRef<HTMLDivElement>(null);
+  // acessibilidade: o foco entra na janela ao abrir e volta para onde estava ao fechar
+  useEffect(() => {
+    if (!aberto) return;
+    const antes = document.activeElement as HTMLElement | null;
+    const t = setTimeout(() => {
+      const el = caixa.current; if (!el || el.contains(document.activeElement)) return;
+      (el.querySelector<HTMLElement>('[autofocus], .modal-corpo input:not([disabled]), .modal-corpo select:not([disabled]), .modal-corpo textarea, .modal-corpo button') || el.querySelector<HTMLElement>('button.fechar'))?.focus();
+    }, 30);
+    return () => { clearTimeout(t); antes?.focus?.(); };
+  }, [aberto]);
   if (!aberto) return null;
   return (
     <div className="modal-fundo" onMouseDown={(e) => e.target === e.currentTarget && onFechar()}>
-      <div className={`modal ${largo ? 'modal-largo' : ''}`} role="dialog" aria-modal="true">
-        <header className="modal-cab"><h3>{titulo}</h3><button className="fechar" onClick={onFechar} aria-label="Fechar">×</button></header>
+      <div ref={caixa} className={`modal ${largo ? 'modal-largo' : ''}`} role="dialog" aria-modal="true" aria-labelledby={idTitulo}>
+        <header className="modal-cab"><h3 id={idTitulo}>{titulo}</h3><button className="fechar" onClick={onFechar} aria-label="Fechar">×</button></header>
         <div className="modal-corpo">{children}</div>
         {rodape && <footer className="modal-rodape">{rodape}</footer>}
       </div>

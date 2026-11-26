@@ -405,3 +405,22 @@ Script: `supabase/migrations/20261224000000_versao_1_5.sql`. Exige a 1.4.1, roda
 **Reverter:** `supabase/reverter_1_5.sql` devolve as funções de pendências da 1.4.1 e tira a DIESP das regiões; a cadeia de comando gravada fica (ajuste na tela, se preciso).
 
 **Testes da 1.5:** aplicada sobre a 1.4.1 com uma sugestão antiga errada já gravada (corrigida pelo script), recusa na 2ª vez, reversão e reaplicação; pendências por perfil (gestor só vê entrega, conferência e sem seção; DGP vê as demais); 29 verificações no navegador (menu e abas por perfil, regiões com DIESP, ficha, rodapé, aviso de erro, celular), sem erros de console.
+
+## 16. Versão 1.6 (Férias: inclusão, PAF de referência, relatórios e lote do SGP)
+
+Script: `supabase/migrations/20261225000000_versao_1_6.sql`. Exige a 1.5, roda numa transação, se recusa a rodar duas vezes e não apaga dados.
+
+| Assunto | O que muda |
+|---|---|
+| PAF de referência | A janela de férias da pessoa tem o seletor "PAF de referência" (ex.: PAF 2025 · gozo de 01/12/2025 a 31/12/2026). Inclusão, reprogramação e interrupção valem para o exercício escolhido |
+| Incluir período | DGP: botão "+ Incluir férias" no quadro (busca a pessoa) e "Incluir período" na janela; também "Incluir / reprogramar férias" na aba Férias da ficha. PAF publicado: o período entra como programado, com origem "Inclusão pela DGP", e vira afastamento; exige publicação ou SEI. PAF em elaboração: entra como proposta |
+| Reprogramar / interromper | Botões separados, só quando cabem (período futuro / em gozo). A DGP pode "Homologar agora" informando a publicação (BGE): cancela o período antigo e já lança o novo como programado |
+| Relatórios | Botão "Relatórios" na tela de Férias: relação simplificada (PDF/Excel), relação completa (Excel com resumo por pessoa, todos os períodos, reprogramações e dados do exercício — serve de cópia), resumo por região e OME (efetivo, 30 dias, menos de 30, sem previsão, em gozo hoje, pico mensal, limite de 10% e meses acima, com subtotais e total), mapa mensal, de férias em um mês, pendências do exercício e, para a DGP, o lote do SGP |
+| Abrangência e filtros | Todos os relatórios saem para todo o CBMPE, uma região (DIM, DINTER I, DINTER II, DIESP ou demais OMEs) ou OMEs escolhidas (com "marcar todas" por região), agrupados por região e OME, só por OME ou sem grupos. Filtros: situação no exercício, posto/graduação, quadro, seção (quando é uma OME só), ano de ingresso e mês de férias. A janela abre com o que está na tela (OME do topo, região do resumo e filtros do quadro); o arquivo traz no nome e no subtítulo a abrangência e os filtros. Quem tem uma OME só não vê a escolha |
+| Lote do SGP (layout SAD) | Gera o .csv da transação 131 "Atualização de gozo de férias em lote" (27 colunas, `;`, cabeçalho igual ao modelo GERAL_layout_ferias_importacao) e a planilha para conferência. Datas em dd/mm/aaaa ou número do Excel; publicação do PAF ou a do próprio período; filtro "todos", "reprogramações ainda não lançadas" ou "a partir de uma data". Quem não tem nº funcional com vínculo (ex.: 2441616/01) fica na aba "Fora do lote" |
+| Acessibilidade | Janelas com título anunciado, foco no primeiro campo e retorno ao fechar; linhas do quadro abrem com Enter |
+| Banco | Origem `INCLUSAO`; funções `ferias_incluir` e `ferias_reprogramar_homologar`; `v_ferias` ganha nº funcional, quadro, seção e situação da pessoa |
+
+**Reverter:** `supabase/reverter_1_6.sql` (antes de reverter a 1.5). Nenhum período é apagado: os de origem INCLUSAO passam a constar como PAF.
+
+**Testes da 1.6:** inclusão em PAF publicado e em elaboração, recusa sem publicação/SEI e para gestor, reprogramação homologada, recusa na 2ª vez, reversão e reaplicação; 60 verificações no navegador (inclusão, PAF de referência, teclado, os 7 relatórios baixados, .csv conferido campo a campo contra o modelo, abrangência por CBMPE, região e OMEs escolhidas com contagens conferidas, filtros herdados do quadro, perfil gestor), sem erros de console.

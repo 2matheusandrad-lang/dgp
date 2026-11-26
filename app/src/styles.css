@@ -603,3 +603,28 @@ input:focus, select:focus, textarea:focus { outline: 3px solid color-mix(in srgb
   .lateral { box-shadow: 0 0 40px rgba(16,24,40,.18); }
   .conteudo { padding: 18px 16px 40px; }
 }
+
+/* relatórios e inclusão de férias (1.6) */
+.opcoes-relatorio { border: 0; padding: 0; margin: 0 0 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+.opcoes-relatorio legend { margin-bottom: 8px; }
+.opcao-relatorio { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--borda); border-radius: 10px; padding: 10px 12px; cursor: pointer; background: var(--superficie); }
+.opcao-relatorio:hover { border-color: var(--borda-forte); }
+.opcao-relatorio.ativa { border-color: var(--tinta); background: var(--superficie-2); }
+.opcao-relatorio input { margin-top: 3px; }
+.opcao-relatorio > span { display: flex; flex-direction: column; gap: 2px; }
+.lista-escolha { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow: auto; }
+.lista-escolha li { padding: 6px 2px; border-bottom: 1px solid var(--borda); }
+.lista-escolha .link { text-align: left; color: var(--texto); }
+.detalhes { margin: 10px 0; }
+.detalhes summary { cursor: pointer; color: var(--texto-2); font-weight: 600; }
+.ferias-grade tbody tr:focus-visible { outline: 2px solid var(--tinta); outline-offset: -2px; }
+.modal-corpo > .check { align-self: flex-start; padding-bottom: 0; }
+/* 1.6 — relatórios de férias: abrangência e recorte */
+.lista-omes { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px 18px; max-height: 260px; overflow: auto;
+  border: 1px solid var(--borda); border-radius: 10px; padding: 10px 14px; margin: 0 0 4px; background: var(--superficie); }
+.lista-omes fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lista-omes legend { font-size: 12px; font-weight: 600; color: var(--texto-2); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+.lista-omes legend .link { text-transform: none; letter-spacing: 0; font-weight: 500; margin-left: 6px; font-size: 12px; }
+.lista-omes .check { padding-bottom: 0; align-self: flex-start; }
+.resumo-recorte { margin: 4px 0 0; padding: 8px 12px; border-left: 3px solid var(--tinta); background: var(--superficie-2); border-radius: 0 8px 8px 0; font-size: 13px; color: var(--texto-2); }
+.resumo-recorte strong { color: var(--texto); font-variant-numeric: tabular-nums; }

@@ -9,6 +9,9 @@ do $$ begin
   if not exists (select 1 from versao_sistema where versao = '1.5') then
     raise exception 'A versão 1.5 não está aplicada neste banco.';
   end if;
+  if exists (select 1 from versao_sistema where versao = '1.6') then
+    raise exception 'Reverta antes a versão 1.6 (supabase/reverter_1_6.sql).';
+  end if;
 end $$;
 
 create or replace function minhas_pendencias(p_ome integer default null)

@@ -9,10 +9,12 @@ import { codificar } from '../lib/consultaLivre';
 import { invalidar, useConsulta } from '../lib/consulta';
 import { buscarTodos, exportarPdf, exportarXlsx, fmtData, fmtDataHora, hojeISO, msgErro, rpc } from '../lib/util';
 import {
-  MOTIVOS_ART10, MOTIVO_JA_AFASTADO, STATUS, TIPO_REPROG, ativo, diasEfetivos, janela, montarImportacao, rotuloMes, somaDiasIso,
+  MOTIVOS_ART10, MOTIVO_JA_AFASTADO, ORIGEM, STATUS, TIPO_REPROG, ativo, diasEfetivos, janela, montarImportacao, rotuloMes, somaDiasIso,
   type PeriodoImportado, type Verificacao,
 } from '../lib/ferias';
 import { Abas, Aviso, Badge, Botao, Campo, Cartao, Carregando, Kpi, Modal, Tabela, Vazio, useToast } from '../components/ui';
+import RelatoriosFerias from './FeriasRelatorios';
+import { FILTROS_VAZIOS, SITUACOES_EX, contarFiltros, passaFiltro, type FiltrosFerias } from '../lib/feriasFiltros';
 
 type Periodo = any;
 type Pessoa = { id: string; tipo: 'MILITAR' | 'CIVIL'; matricula: string; nome: string; nome_guerra?: string | null; posto_completo: string;
@@ -25,17 +27,24 @@ const anoAtualGozo = () => { const h = new Date(); return h.getMonth() === 11 ? 
 const sobrepoe = (p: Periodo, ini: string, fim: string) => p.data_inicio <= fim && p.data_fim >= ini;
 const fimMesIso = (iso: string) => { const [a, m] = iso.split('-').map(Number); return `${iso.slice(0, 8)}${String(new Date(a, m, 0).getDate()).padStart(2, '0')}`; };
 const recarregarTudo = () => { invalidar('ferias'); invalidar('pendencias'); invalidar('painel'); invalidar('efetivo'); };
+const useExercicios = () => useConsulta('ferias|ex', async () => {
+  const { data, error } = await supabase.from('ferias_exercicio').select('*').order('ano', { ascending: false });
+  if (error) throw error; return data || [];
+}, 60_000);
+const rotuloEx = (e: any) => `PAF ${e.ano} · gozo de 01/12/${e.ano} a 31/12/${e.ano + 1} · ${e.situacao === 'PUBLICADO' ? 'publicado' : 'em elaboração'}`;
 
 export default function Ferias() {
-  const { gestaoGlobal, podeEditarAlguma } = useAuth();
+  const { gestaoGlobal, podeEditarAlguma, escopo } = useAuth();
   const [params, setParams] = useSearchParams();
   const aba = params.get('aba') || 'quadro';
   const setAba = (a: string) => setParams(new URLSearchParams({ aba: a }), { replace: true });
-  const ex = useConsulta('ferias|ex', async () => {
-    const { data, error } = await supabase.from('ferias_exercicio').select('*').order('ano', { ascending: false });
-    if (error) throw error; return data || [];
-  }, 60_000);
+  const ex = useExercicios();
   const [ano, setAno] = useState<number | null>(null);
+  const [rel, setRel] = useState(false);
+  // filtros do quadro e região do resumo ficam aqui: os relatórios partem do que está na tela
+  const [filtros, setFiltros] = useState<FiltrosFerias>(FILTROS_VAZIOS);
+  const [regiaoTela, setRegiaoTela] = useState('');
+  useEffect(() => { setFiltros((f) => (f.secao ? { ...f, secao: '' } : f)); }, [escopo]);
   useEffect(() => {
     if (ano || !ex.dados?.length) return;
     const atual = anoAtualGozo();
@@ -53,10 +62,11 @@ export default function Ferias() {
         </div>
         <div className="acoes">
           {ex.dados && ex.dados.length > 0 && (
-            <select value={ano ?? ''} onChange={(e) => setAno(Number(e.target.value))}>
+            <select aria-label="Exercício do PAF" value={ano ?? ''} onChange={(e) => setAno(Number(e.target.value))}>
               {ex.dados.map((e: any) => <option key={e.ano} value={e.ano}>PAF {e.ano}{e.situacao === 'ELABORACAO' ? ' (em elaboração)' : ''}</option>)}
             </select>
           )}
+          {exercicio && <Botao onClick={() => setRel(true)}>Relatórios</Botao>}
         </div>
       </div>
       {!gestaoGlobal && <p className="nota so-dgp">Consulta: o PAF, as reprogramações e o cadastro de servidores civis são lançados e alterados somente pela DGP.</p>}
@@ -71,13 +81,14 @@ export default function Ferias() {
       {!ex.dados ? <Carregando /> : !ex.dados.length && aba !== 'exercicios' && aba !== 'importar' ? (
         <Aviso tom="info">Nenhum exercício do PAF cadastrado ainda.{gestaoGlobal ? ' Abra o exercício em "Exercícios e regras" ou importe a planilha atual em "Importar planilha".' : ' A DGP abre o exercício e avisa as OMEs.'}</Aviso>
       ) : <>
-        {aba === 'quadro' && exercicio && <Quadro exercicio={exercicio} />}
+        {aba === 'quadro' && exercicio && <Quadro exercicio={exercicio} f={filtros} setF={setFiltros} regiao={regiaoTela} setRegiao={setRegiaoTela} />}
         {aba === 'reprogramacoes' && <Reprogramacoes />}
         {aba === 'pendencias' && exercicio && <Pendencias exercicio={exercicio} />}
         {aba === 'civis' && <Civis />}
         {aba === 'exercicios' && gestaoGlobal && <Exercicios exercicios={ex.dados} />}
         {aba === 'importar' && gestaoGlobal && <Importar />}
       </>}
+      {rel && exercicio && <RelatoriosFerias exercicio={exercicio} filtrosTela={aba === 'quadro' ? filtros : FILTROS_VAZIOS} regiaoTela={aba === 'quadro' && !escopo ? regiaoTela : ''} onFechar={() => setRel(false)} />}
     </div>
   );
 }
@@ -116,22 +127,16 @@ const useOmesEnsino = () => useConsulta('ferias|ensino', async () => {
 }, 300_000);
 
 // ======================================================================= quadro
-function Quadro({ exercicio }: { exercicio: any }) {
+function Quadro({ exercicio, f, setF, regiao, setRegiao }: { exercicio: any; f: FiltrosFerias; setF: (f: FiltrosFerias) => void; regiao: string; setRegiao: (r: string) => void }) {
   const { escopo, setEscopo, gestaoGlobal } = useAuth();
   const meses = janela(exercicio.ano);
   const ini = meses[0], fim = fimMesIso(meses[12]);
   const pessoas = usePessoas(escopo);
   const periodos = usePeriodos(escopo, ini, fim);
   const ensino = useOmesEnsino();
-  const [busca, setBusca] = useState('');
-  const [so, setSo] = useState<string>('todos');
-  const [fPosto, setFPosto] = useState('');
-  const [fQuadro, setFQuadro] = useState('');
-  const [fSecao, setFSecao] = useState('');
-  const [fIngresso, setFIngresso] = useState('');
-  const [fMes, setFMes] = useState('');
+  const muda = (k: keyof FiltrosFerias, v: string) => setF({ ...f, [k]: v });
   const [aberta, setAberta] = useState<Pessoa | null>(null);
-  const [exp, setExp] = useState(false);
+  const [buscar, setBuscar] = useState(false);
   const dom = useDominios();
   const nav = useNavigate();
   if (pessoas.erro || periodos.erro) return <Aviso tom="erro">{pessoas.erro || periodos.erro}</Aviso>;
@@ -142,38 +147,15 @@ function Quadro({ exercicio }: { exercicio: any }) {
   for (const p of vigentes) { const k = p.pessoa_id; if (!porPessoa.has(k)) porPessoa.set(k, []); porPessoa.get(k)!.push(p); }
   const diasEx = (id: string) => (porPessoa.get(id) || []).filter((p) => p.exercicio === exercicio.ano).reduce((s, p) => s + diasEfetivos(p), 0);
 
-  if (!escopo) return <ResumoOmes exercicio={exercicio} pessoas={pessoas.dados} periodos={vigentes} ensino={ensino.dados} onOme={setEscopo} />;
+  if (!escopo) return <ResumoOmes exercicio={exercicio} pessoas={pessoas.dados} periodos={vigentes} ensino={ensino.dados} onOme={setEscopo} fReg={regiao} setFReg={setRegiao} />;
 
   const efetivo = pessoas.dados.length;
   const limite = ensino.dados?.has(escopo) ? null : Math.max(1, Math.floor(efetivo * 0.1));
   const contagem = meses.map((m) => new Set(vigentes.filter((p) => sobrepoe(p, m, fimMesIso(m))).map((p) => p.pessoa_id)).size);
-  const filtro = busca.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  const linhas = pessoas.dados.filter((p: any) => {
-    if (filtro && !`${p.nome} ${p.nome_guerra || ''} ${p.matricula}`.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().includes(filtro)) return false;
-    if (fPosto && (p.tipo === 'CIVIL' ? fPosto !== 'CIVIL' : p.posto_sigla !== fPosto)) return false;
-    if (fQuadro && (fQuadro === 'PRACA' ? p.tipo !== 'MILITAR' || p.oficial : p.quadro_sigla !== fQuadro)) return false;
-    if (fSecao && String(p.secao_id || '-') !== fSecao) return false;
-    if (fIngresso && String(p.ano_ingresso || '') !== fIngresso) return false;
-    const ps = porPessoa.get(p.id) || [];
-    if (fMes && !ps.some((x) => sobrepoe(x, fMes, fimMesIso(fMes)))) return false;
-    const doEx = ps.filter((x) => x.exercicio === exercicio.ano);
-    const d = diasEx(p.id);
-    switch (so) {
-      case 'sem': return d === 0;
-      case 'incompletos': return d > 0 && d < 30;
-      case 'completos': return d >= 30;
-      case 'emgozo': return doEx.some((x) => x.status === 'EM_GOZO');
-      case 'agozar': return doEx.some((x) => x.status === 'A_GOZAR' || x.status === 'PROPOSTA');
-      case 'gozou': return doEx.length > 0 && doEx.every((x) => x.status === 'GOZADA' || x.status === 'INTERROMPIDA');
-      case 'excecao': return doEx.some((x) => x.excecao && !x.excecao_aprovada_em);
-      case 'estimada': return doEx.some((x) => x.data_estimada);
-      case 'reprog': return doEx.some((x) => x.origem === 'REPROGRAMACAO');
-    }
-    return true;
-  });
+  const linhas = pessoas.dados.filter((p: any) => passaFiltro(p, porPessoa.get(p.id) || [], exercicio.ano, f));
   const postosPres = [...new Map(pessoas.dados.map((p: any) => [p.tipo === 'CIVIL' ? 'CIVIL' : p.posto_sigla, p.tipo === 'CIVIL' ? 99 : p.posto_ordem])).entries()].sort((a, b) => a[1] - b[1]);
   const anosIngresso = [...new Set(pessoas.dados.map((p: any) => p.ano_ingresso).filter(Boolean))].sort((a: any, b: any) => b - a);
-  const filtrosAtivos = [fPosto, fQuadro, fSecao, fIngresso, fMes, so !== 'todos' ? so : '', busca].filter(Boolean).length;
+  const filtrosAtivos = contarFiltros(f);
   const sem = pessoas.dados.filter((p) => diasEx(p.id) === 0).length;
   const incompletos = pessoas.dados.filter((p) => { const d = diasEx(p.id); return d > 0 && d < 30; }).length;
   const excedidos = limite ? contagem.filter((c) => c > limite).length : 0;
@@ -183,54 +165,51 @@ function Quadro({ exercicio }: { exercicio: any }) {
     <div className="kpis">
       <Kpi rotulo="Efetivo da OME" valor={efetivo} detalhe={limite ? `limite mensal de férias: ${limite} (10%, art. 5º)` : 'órgão de ensino: sem limite de 10%'} />
       <Kpi rotulo={`Com férias do PAF ${exercicio.ano}`} valor={efetivo - sem} detalhe={`${incompletos} com menos de 30 dias`} />
-      <Kpi rotulo="Sem previsão" valor={sem} tom={sem ? 'alerta' : 'ok'} onClick={() => setSo('sem')} />
+      <Kpi rotulo="Sem previsão" valor={sem} tom={sem ? 'alerta' : 'ok'} onClick={() => muda('so', 'sem')} />
       <Kpi rotulo="Meses acima do limite" valor={excedidos} tom={excedidos ? 'alerta' : 'ok'} />
     </div>
     <div className="filtros">
-      <Campo rotulo="Buscar"><input placeholder="Nome ou matrícula" value={busca} onChange={(e) => setBusca(e.target.value)} /></Campo>
+      <Campo rotulo="Buscar"><input placeholder="Nome ou matrícula" value={f.busca} onChange={(e) => muda('busca', e.target.value)} /></Campo>
       <Campo rotulo="Situação no exercício">
-        <select value={so} onChange={(e) => setSo(e.target.value)}>
-          <option value="todos">Todos</option>
-          <option value="sem">Sem previsão</option><option value="incompletos">Com menos de 30 dias</option><option value="completos">Com 30 dias programados</option>
-          <option value="agozar">Com parcela a gozar</option><option value="emgozo">Em gozo agora</option><option value="gozou">Já gozou tudo</option>
-          <option value="excecao">Com exceção pendente</option><option value="reprog">Com reprogramação</option><option value="estimada">Com dia estimado</option>
+        <select value={f.so} onChange={(e) => muda('so', e.target.value)}>
+          {SITUACOES_EX.map(([k, r]) => <option key={k} value={k}>{r}</option>)}
         </select>
       </Campo>
       <Campo rotulo="Posto/grad.">
-        <select value={fPosto} onChange={(e) => setFPosto(e.target.value)}>
+        <select value={f.posto} onChange={(e) => muda('posto', e.target.value)}>
           <option value="">Todos</option>{postosPres.map(([k]) => <option key={k} value={k}>{k === 'CIVIL' ? 'Servidores civis' : k}</option>)}
         </select>
       </Campo>
       <Campo rotulo="Quadro">
-        <select value={fQuadro} onChange={(e) => setFQuadro(e.target.value)}>
+        <select value={f.quadro} onChange={(e) => muda('quadro', e.target.value)}>
           <option value="">Todos</option>{dom?.quadros.map((q) => <option key={q.sigla} value={q.sigla}>{q.sigla}</option>)}<option value="PRACA">Praças</option>
         </select>
       </Campo>
       <Campo rotulo="Seção">
-        <select value={fSecao} onChange={(e) => setFSecao(e.target.value)}>
+        <select value={f.secao} onChange={(e) => muda('secao', e.target.value)}>
           <option value="">Todas</option><option value="-">(sem seção)</option>{secoesDa(dom, escopo).map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
         </select>
       </Campo>
       <Campo rotulo="Ano de ingresso">
-        <select value={fIngresso} onChange={(e) => setFIngresso(e.target.value)}>
+        <select value={f.ingresso} onChange={(e) => muda('ingresso', e.target.value)}>
           <option value="">Todos</option>{anosIngresso.map((a: any) => <option key={a} value={a}>{a}</option>)}
         </select>
       </Campo>
       <Campo rotulo="De férias em">
-        <select value={fMes} onChange={(e) => setFMes(e.target.value)}>
+        <select value={f.mes} onChange={(e) => muda('mes', e.target.value)}>
           <option value="">Qualquer mês</option>{meses.map((m) => <option key={m} value={m}>{rotuloMes(m)}</option>)}
         </select>
       </Campo>
       <div className="acoes fim">
-        {filtrosAtivos > 0 && <button className="link" onClick={() => { setBusca(''); setSo('todos'); setFPosto(''); setFQuadro(''); setFSecao(''); setFIngresso(''); setFMes(''); }}>limpar filtros</button>}
+        {filtrosAtivos > 0 && <button className="link" onClick={() => setF(FILTROS_VAZIOS)}>limpar filtros</button>}
         <Botao onClick={() => nav(`/consultas?q=${codificar({ assunto: 'ferias', filtros: [{ campo: 'exercicio', op: 'in', valor: [String(exercicio.ano)] }, { campo: 'm.ome', op: 'in', valor: [dom?.omes.find((o) => o.id === escopo)?.sigla || ''] }], modo: 'E', linhas: 'mes', colunas: 'status', medida: 'pessoas' })}`)}>Analisar nas consultas</Botao>
-        <Botao onClick={() => setExp(true)}>Exportar relação</Botao>
+        {editavel && <Botao variante="primario" onClick={() => setBuscar(true)}>+ Incluir férias</Botao>}
       </div>
     </div>
     <div className="legenda ferias-legenda">
       {['PROPOSTA', 'A_GOZAR', 'EM_GOZO', 'GOZADA', 'INTERROMPIDA'].map((s) => <span key={s} className={`fchip f-${s}`}>{STATUS[s].rotulo}</span>)}
       <span className="fchip f-outro">outro exercício</span>
-      <span className="nota">{filtrosAtivos ? `${linhas.length} de ${pessoas.dados.length} pessoas · ` : ''}Clique no nome para lançar ou reprogramar.</span>
+      <span className="nota">{filtrosAtivos ? `${linhas.length} de ${pessoas.dados.length} pessoas · ` : ''}{editavel ? 'Clique numa linha (ou Enter) para incluir, reprogramar ou interromper.' : 'Clique numa linha para ver os períodos.'}</span>
     </div>
     <div className="tabela-wrap">
       <table className="tabela compacta ferias-grade">
@@ -240,7 +219,8 @@ function Quadro({ exercicio }: { exercicio: any }) {
             const ps = porPessoa.get(p.id) || [];
             const d = diasEx(p.id);
             return (
-              <tr key={p.id} className="clicavel" onClick={() => setAberta(p)}>
+              <tr key={p.id} className="clicavel" tabIndex={0} aria-label={`${p.posto_completo} ${p.nome}: ${d} dias no PAF ${exercicio.ano}`}
+                onClick={() => setAberta(p)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAberta(p); } }}>
                 <td className="fix"><strong>{p.posto_completo}</strong> {p.nome_guerra || p.nome}</td>
                 {meses.map((m) => {
                   const f = fimMesIso(m);
@@ -261,16 +241,15 @@ function Quadro({ exercicio }: { exercicio: any }) {
       </table>
     </div>
     {aberta && <PessoaFerias pessoa={aberta} exercicio={exercicio} editavel={editavel} onFechar={() => setAberta(null)} />}
-    {exp && <ExportarRelacao exercicio={exercicio} pessoas={pessoas.dados} periodos={periodos.dados.filter((p: any) => p.exercicio === exercicio.ano && ativo(p))} onFechar={() => setExp(false)} />}
+    {buscar && <EscolherPessoa pessoas={pessoas.dados} onFechar={() => setBuscar(false)} onEscolher={(p) => { setBuscar(false); setAberta(p); }} />}
   </>;
 }
 
-function ResumoOmes({ exercicio, pessoas, periodos, ensino, onOme }: { exercicio: any; pessoas: Pessoa[]; periodos: Periodo[]; ensino?: Set<number>; onOme: (id: number) => void }) {
+function ResumoOmes({ exercicio, pessoas, periodos, ensino, onOme, fReg, setFReg }: { exercicio: any; pessoas: Pessoa[]; periodos: Periodo[]; ensino?: Set<number>; onOme: (id: number) => void; fReg: string; setFReg: (r: string) => void }) {
   const dom = useDominios();
   const nav = useNavigate();
   const meses = janela(exercicio.ano);
   const regioes = useMemo(() => mapaRegioes(dom), [dom]);
-  const [fReg, setFReg] = useState('');
   const linhas = useMemo(() => {
     const m = new Map<number, any>();
     for (const p of pessoas) {
@@ -313,9 +292,30 @@ function ResumoOmes({ exercicio, pessoas, periodos, ensino, onOme }: { exercicio
 }
 
 // ======================================================================= pessoa
+function EscolherPessoa({ pessoas, onFechar, onEscolher }: { pessoas: Pessoa[]; onFechar: () => void; onEscolher: (p: Pessoa) => void }) {
+  const [q, setQ] = useState('');
+  const n = q.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const achados = n.length < 2 ? [] : pessoas.filter((p) => `${p.nome} ${p.nome_guerra || ''} ${p.matricula}`.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(n)).slice(0, 30);
+  return (
+    <Modal aberto titulo="Incluir férias: escolha o militar ou servidor" onFechar={onFechar} rodape={<Botao onClick={onFechar}>Cancelar</Botao>}>
+      <Campo rotulo="Buscar" dica="Nome, nome de guerra ou matrícula (mínimo 2 letras)">
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && achados[0]) onEscolher(achados[0]); }} />
+      </Campo>
+      <ul className="lista-escolha" role="listbox" aria-label="Resultados">
+        {achados.map((p) => <li key={p.id}><button className="link" onClick={() => onEscolher(p)}><strong>{p.posto_completo}</strong> {p.nome} <span className="nota">· {p.matricula}{p.ome_sigla ? ` · ${p.ome_sigla}` : ''}</span></button></li>)}
+        {n.length >= 2 && !achados.length && <li className="nota">Ninguém encontrado nesta OME.</li>}
+      </ul>
+    </Modal>
+  );
+}
+
+type Acao = '' | 'proposta' | 'incluir' | 'reprogramar' | 'interromper';
 function PessoaFerias({ pessoa, exercicio, editavel, onFechar }: { pessoa: Pessoa; exercicio: any; editavel: boolean; onFechar: () => void }) {
   const { gestaoGlobal } = useAuth();
   const toast = useToast();
+  const exs = useExercicios();
+  const [anoRef, setAnoRef] = useState<number>(exercicio.ano);
+  const exRef = exs.dados?.find((e: any) => e.ano === anoRef) || exercicio;
   const col = pessoa.tipo === 'CIVIL' ? 'civil_id' : 'militar_id';
   const lista = useConsulta(`ferias|pessoa|${pessoa.id}`, async () => {
     const [p, r] = await Promise.all([
@@ -325,34 +325,53 @@ function PessoaFerias({ pessoa, exercicio, editavel, onFechar }: { pessoa: Pesso
     if (p.error) throw p.error; if (r.error) throw r.error;
     return { periodos: p.data || [], reprog: r.data || [] };
   }, 10_000);
-  const [modo, setModo] = useState<'' | 'proposta' | 'reprogramar'>('');
+  const [modo, setModo] = useState<Acao>('');
   const [naoGozada, setNaoGozada] = useState<any>(null);
   if (!lista.dados) return <Modal aberto largo titulo={`${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}><Carregando /></Modal>;
-  const doEx = lista.dados.periodos.filter((p: any) => p.exercicio === exercicio.ano);
+  const doEx = lista.dados.periodos.filter((p: any) => p.exercicio === exRef.ano);
   const vig = doEx.filter(ativo);
   const dias = vig.reduce((s: number, p: any) => s + diasEfetivos(p), 0);
-  const pendente = lista.dados.reprog.find((r: any) => r.status === 'AGUARDANDO_DGP' && r.exercicio === exercicio.ano);
+  const hoje = hojeISO();
+  const futuros = doEx.filter((p: any) => p.situacao === 'PROGRAMADA' && p.data_inicio > hoje);
+  const emGozo = doEx.filter((p: any) => p.situacao === 'PROGRAMADA' && p.data_inicio <= hoje && p.data_fim >= hoje);
+  const pendente = lista.dados.reprog.find((r: any) => r.status === 'AGUARDANDO_DGP' && r.exercicio === exRef.ano);
   const exercicios = [...new Set<number>(lista.dados.periodos.map((p: any) => p.exercicio))].sort((a, b) => b - a);
   const mudou = () => { lista.recarregar(); recarregarTudo(); };
+  const publicado = exRef.situacao === 'PUBLICADO';
+  const voltar = () => setModo('');
+  const feito = () => { setModo(''); mudou(); };
 
-  if (modo) return modo === 'proposta'
-    ? <EditorProposta pessoa={pessoa} exercicio={exercicio} atuais={vig} onFechar={() => setModo('')} onFeito={() => { setModo(''); mudou(); }} />
-    : <EditorReprogramacao pessoa={pessoa} exercicio={exercicio} periodos={doEx} onFechar={() => setModo('')} onFeito={() => { setModo(''); mudou(); }} />;
+  if (modo === 'proposta') return <EditorProposta pessoa={pessoa} exercicio={exRef} atuais={vig} onFechar={voltar} onFeito={feito} />;
+  if (modo === 'incluir') return <EditorInclusao pessoa={pessoa} exercicio={exRef} diasAtuais={dias} onFechar={voltar} onFeito={feito} />;
+  if (modo === 'reprogramar' || modo === 'interromper') return <EditorReprogramacao pessoa={pessoa} exercicio={exRef} periodos={doEx} inicial={modo === 'interromper' ? 'INTERRUPCAO' : 'A_PEDIDO'} onFechar={voltar} onFeito={feito} />;
 
   return (
     <Modal aberto largo titulo={`${pessoa.posto_completo} ${pessoa.nome} · ${pessoa.matricula}`} onFechar={onFechar}
       rodape={<>
         <Botao onClick={onFechar}>Fechar</Botao>
-        {editavel && exercicio.situacao === 'ELABORACAO' && <Botao variante="primario" onClick={() => setModo('proposta')}>{vig.length ? 'Alterar proposta' : 'Lançar proposta'}</Botao>}
-        {editavel && exercicio.situacao === 'PUBLICADO' && !pendente && <Botao variante="primario" onClick={() => setModo('reprogramar')}>Reprogramar / interromper</Botao>}
+        {editavel && !publicado && <Botao variante="primario" onClick={() => setModo('proposta')}>{vig.length ? 'Alterar períodos da proposta' : 'Incluir períodos na proposta'}</Botao>}
+        {editavel && publicado && <>
+          {emGozo.length > 0 && !pendente && <Botao onClick={() => setModo('interromper')}>Interromper</Botao>}
+          {futuros.length > 0 && !pendente && <Botao onClick={() => setModo('reprogramar')}>Reprogramar</Botao>}
+          <Botao variante="primario" onClick={() => setModo('incluir')}>Incluir período</Botao>
+        </>}
       </>}>
+      <div className="form-grade">
+        <Campo rotulo="PAF de referência" largura="meia" dica="As ações abaixo valem para este exercício">
+          <select value={anoRef} onChange={(e) => setAnoRef(Number(e.target.value))}>
+            {(exs.dados || [exercicio]).map((e: any) => <option key={e.ano} value={e.ano}>{rotuloEx(e)}</option>)}
+          </select>
+        </Campo>
+      </div>
       <div className="mini-kpis">
-        <div><strong>{dias}</strong><span>dias no PAF {exercicio.ano}</span></div>
+        <div><strong>{dias}</strong><span>dias no PAF {exRef.ano}</span></div>
         <div><strong>{Math.max(0, 30 - dias)}</strong><span>saldo</span></div>
         <div><strong>{vig.length}</strong><span>período(s)</span></div>
       </div>
-      {pendente && <Aviso tom="info">Há reprogramação aguardando homologação da DGP (pedida em {fmtDataHora(pendente.solicitado_em)}).</Aviso>}
-      {exercicio.situacao === 'PUBLICADO' && editavel && <p className="nota">PAF publicado: mudanças só por reprogramação, com processo SEI, deferimento do titular da OME e homologação da DGP (art. 11 e 13).</p>}
+      {pendente && <Aviso tom="info">Há reprogramação do PAF {exRef.ano} aguardando homologação (pedida em {fmtDataHora(pendente.solicitado_em)}): decida em Férias &gt; Reprogramações.</Aviso>}
+      {editavel && <p className="nota">{publicado
+        ? `PAF ${exRef.ano} publicado: inclua períodos (com publicação ou SEI), reprograme os que ainda não começaram ou interrompa o que está em gozo. Tudo fica registrado.`
+        : `PAF ${exRef.ano} em elaboração: os períodos entram como proposta e viram programados quando o PAF for publicado.`}</p>}
       {exercicios.length === 0 ? <Vazio>Nenhum período de férias lançado.</Vazio> : exercicios.map((e) => (
         <div key={e} className="ferias-ex">
           <h4>PAF {e}</h4>
@@ -362,11 +381,12 @@ function PessoaFerias({ pessoa, exercicio, editavel, onFechar }: { pessoa: Pesso
             { id: 'data_fim', titulo: 'Fim', render: (r: any) => fmtData(r.data_fim) },
             { id: 'dias', titulo: 'Dias', render: (r: any) => (r.situacao === 'INTERROMPIDA' ? `${r.dias_gozados} de ${r.dias}` : r.dias) },
             { id: 'status', titulo: 'Situação', render: (r: any) => <Badge tom={STATUS[r.status]?.tom}>{STATUS[r.status]?.rotulo}</Badge> },
+            { id: 'origem', titulo: 'Origem', render: (r: any) => <span className="nota">{ORIGEM[r.origem] || r.origem}</span> },
             { id: 'doc', titulo: 'Publicação / SEI', ordenavel: false, render: (r: any) => <span className="nota">{[r.publicacao, r.processo_sei].filter(Boolean).join(' · ')}</span> },
             { id: 'exc', titulo: '', ordenavel: false, render: (r: any) => r.excecao ? <Badge tom={r.excecao_aprovada_por ? 'azul' : 'amarelo'} title={r.excecao}>{r.excecao_aprovada_por ? 'exceção autorizada' : 'exceção pendente'}</Badge> : null },
             ...(gestaoGlobal ? [{ id: 'acoes', titulo: '', ordenavel: false, render: (r: any) => <span className="acoes-linha" onClick={(ev) => ev.stopPropagation()}>
               {r.situacao === 'PROGRAMADA' && <Botao pequeno variante="fantasma" onClick={() => setNaoGozada(r)}>Não gozada</Botao>}
-              {(r.situacao === 'PROPOSTA' || r.origem === 'IMPORTACAO') && <Botao pequeno variante="fantasma" onClick={async () => {
+              {(r.situacao === 'PROPOSTA' || r.origem === 'IMPORTACAO' || r.origem === 'INCLUSAO') && <Botao pequeno variante="fantasma" onClick={async () => {
                 if (!confirm('Excluir este período? A exclusão fica no histórico.')) return;
                 try { await rpc('ferias_excluir_periodo', { p_id: r.id }); toast('Período excluído.'); mudou(); } catch (err) { toast(msgErro(err), 'erro'); }
               }}>Excluir</Botao>}
@@ -377,10 +397,11 @@ function PessoaFerias({ pessoa, exercicio, editavel, onFechar }: { pessoa: Pesso
       {lista.dados.reprog.length > 0 && <>
         <h4>Reprogramações</h4>
         <Tabela linhas={lista.dados.reprog} chave={(r: any) => r.id} compacta colunas={[
-          { id: 'solicitado_em', titulo: 'Pedido', render: (r: any) => fmtDataHora(r.solicitado_em) },
+          { id: 'solicitado_em', titulo: 'Registro', render: (r: any) => fmtDataHora(r.solicitado_em) },
+          { id: 'exercicio', titulo: 'PAF' },
           { id: 'tipo', titulo: 'Tipo', render: (r: any) => TIPO_REPROG[r.tipo] },
           { id: 'novos', titulo: 'Novo período', ordenavel: false, render: (r: any) => (r.novos || []).map((n: any) => `${fmtData(n.inicio)} (${n.dias}d)`).join(', ') },
-          { id: 'status', titulo: 'Situação', render: (r: any) => <><Badge tom={r.status === 'HOMOLOGADA' ? 'verde' : r.status === 'DEVOLVIDA' ? 'vermelho' : r.status === 'CANCELADA' ? 'neutro' : 'amarelo'}>{r.status.replace('_', ' ').toLowerCase()}</Badge>{r.resposta && <div className="nota">{r.resposta}</div>}</> },
+          { id: 'status', titulo: 'Situação', render: (r: any) => <><Badge tom={r.status === 'HOMOLOGADA' ? 'verde' : r.status === 'DEVOLVIDA' ? 'vermelho' : r.status === 'CANCELADA' ? 'neutro' : 'amarelo'}>{r.status.replace('_', ' ').toLowerCase()}</Badge>{r.publicacao_dgp && <div className="nota">{r.publicacao_dgp}</div>}{r.resposta && <div className="nota">{r.resposta}</div>}</> },
         ]} />
       </>}
       {naoGozada && <NaoGozada periodo={naoGozada} onFechar={() => setNaoGozada(null)} onFeito={() => { setNaoGozada(null); mudou(); }} />}
@@ -511,12 +532,49 @@ function EditorProposta({ pessoa, exercicio, atuais, onFechar, onFeito }: { pess
   );
 }
 
-function EditorReprogramacao({ pessoa, exercicio, periodos, onFechar, onFeito }: { pessoa: Pessoa; exercicio: any; periodos: Periodo[]; onFechar: () => void; onFeito: () => void }) {
+function EditorInclusao({ pessoa, exercicio, diasAtuais, onFechar, onFeito }: { pessoa: Pessoa; exercicio: any; diasAtuais: number; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
+  const saldo = Math.max(0, 30 - diasAtuais);
+  const meses = janela(exercicio.ano);
+  const proxMes = meses.find((m) => m > hojeISO()) || meses[1];
+  const [novos, setNovos] = useState<Novo[]>([{ inicio: proxMes, dias: saldo > 0 && saldo !== 30 ? saldo : 30 }]);
+  const [pub, setPub] = useState(''); const [sei, setSei] = useState(''); const [obs, setObs] = useState(''); const [exc, setExc] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const ver = useVerificacao({ ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_novos: novos, p_ignorar: [], p_tipo: 'INCLUSAO' });
+  const bloq = (ver || []).filter((x) => x.nivel === 'bloqueio').length;
+  const salvar = async () => {
+    setErro(null);
+    try {
+      await rpc('ferias_incluir', { ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_periodos: novos, p_publicacao: pub || null, p_processo: sei || null, p_excecao: bloq ? exc : null, p_observacao: obs || null });
+      toast(`Período incluído no PAF ${exercicio.ano}${pessoa.tipo === 'MILITAR' ? ' e lançado como afastamento' : ''}.`); onFeito();
+    } catch (e) { setErro(msgErro(e)); }
+  };
+  return (
+    <Modal aberto largo titulo={`Incluir período · PAF ${exercicio.ano} · ${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}
+      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || (!pub.trim() && !sei.trim()) || (bloq > 0 && !exc.trim())} onClick={salvar}>{bloq ? 'Incluir com exceção' : 'Incluir período'}</Botao></>}>
+      <p className="nota">{diasAtuais} dia(s) já lançados no PAF {exercicio.ano}; saldo de {saldo}. O período entra como programado e vira afastamento "Férias".</p>
+      <SeletorPeriodos ano={exercicio.ano} valor={novos} onChange={setNovos} livre />
+      <ListaVerificacoes v={ver} />
+      {bloq > 0 && <Campo rotulo="Justificativa da exceção *" largura="inteira" dica="Fica registrada como exceção autorizada pela DGP."><textarea rows={2} value={exc} onChange={(e) => setExc(e.target.value)} /></Campo>}
+      <div className="form-grade">
+        <Campo rotulo="Publicação" dica="Nota ou BGE da inclusão. Informe esta ou o SEI."><input value={pub} onChange={(e) => setPub(e.target.value)} placeholder="Nota nº 000/26-DGP ou BGE nº 000/2026" /></Campo>
+        <Campo rotulo="Processo SEI"><input value={sei} onChange={(e) => setSei(e.target.value)} placeholder="3900000000.000000/2026-00" /></Campo>
+        <Campo rotulo="Observação" largura="meia" dica="Não registre diagnóstico ou CID (LGPD)."><input value={obs} onChange={(e) => setObs(e.target.value)} placeholder="Ex.: incluído após a publicação (recém-incluído no CBMPE)" /></Campo>
+      </div>
+      {erro && <Aviso tom="erro">{erro}</Aviso>}
+    </Modal>
+  );
+}
+
+function EditorReprogramacao({ pessoa, exercicio, periodos, inicial, onFechar, onFeito }: { pessoa: Pessoa; exercicio: any; periodos: Periodo[]; inicial?: 'A_PEDIDO' | 'INTERRUPCAO'; onFechar: () => void; onFeito: () => void }) {
+  const toast = useToast();
+  const { gestaoGlobal } = useAuth();
+  const [homologar, setHomologar] = useState(gestaoGlobal);
+  const [pubDgp, setPubDgp] = useState('');
   const hoje = hojeISO();
   const futuros = periodos.filter((p) => p.situacao === 'PROGRAMADA' && p.data_inicio > hoje);
   const emGozo = periodos.filter((p) => p.situacao === 'PROGRAMADA' && p.data_inicio <= hoje && p.data_fim >= hoje);
-  const [tipo, setTipo] = useState(emGozo.length && !futuros.length ? 'INTERRUPCAO' : 'A_PEDIDO');
+  const [tipo, setTipo] = useState(inicial === 'INTERRUPCAO' && emGozo.length ? 'INTERRUPCAO' : emGozo.length && !futuros.length ? 'INTERRUPCAO' : 'A_PEDIDO');
   const [motivo, setMotivo] = useState('');
   const [req, setReq] = useState(hoje);
   const [sei, setSei] = useState('');
@@ -546,18 +604,25 @@ function EditorReprogramacao({ pessoa, exercicio, periodos, onFechar, onFeito }:
   const enviar = async () => {
     setErro(null);
     try {
-      await rpc('ferias_reprogramar', {
+      const args = {
         ...pessoaArgs(pessoa), p_exercicio: exercicio.ano, p_tipo: tipo, p_motivo: motivo || null,
         p_requerimento: tipo === 'A_PEDIDO' || tipo === 'DE_OFICIO' ? req : null, p_processo: sei, p_publicacao_ome: pub || null,
         p_cancelar: interrupcao ? [] : cancelar, p_novos: novos, p_interromper: interrupcao ? interromper || null : null,
         p_interrupcao_em: interrupcao ? intEm : null, p_excecao: bloq ? exc : null, p_observacao: obs || null,
-      });
-      toast('Reprogramação enviada para homologação da DGP.'); onFeito();
+      };
+      if (homologar) {
+        await rpc('ferias_reprogramar_homologar', { ...args, p_publicacao_dgp: pubDgp });
+        toast(interrupcao ? 'Interrupção registrada e homologada; o afastamento foi atualizado.' : 'Reprogramação registrada e homologada; o afastamento foi atualizado.');
+      } else {
+        await rpc('ferias_reprogramar', args);
+        toast('Reprogramação registrada; homologue em Férias > Reprogramações.');
+      }
+      onFeito();
     } catch (e) { setErro(msgErro(e)); }
   };
   return (
-    <Modal aberto largo titulo={`Reprogramação · PAF ${exercicio.ano} · ${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}
-      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || !sei.trim() || (bloq > 0 && !exc.trim())} onClick={enviar}>{bloq ? 'Enviar com pedido de exceção' : 'Enviar à DGP'}</Botao></>}>
+    <Modal aberto largo titulo={`${interrupcao ? 'Interrupção' : 'Reprogramação'} · PAF ${exercicio.ano} · ${pessoa.posto_completo} ${pessoa.nome}`} onFechar={onFechar}
+      rodape={<><Botao onClick={onFechar}>Voltar</Botao><Botao variante="primario" disabled={!ver || !sei.trim() || (bloq > 0 && !exc.trim()) || (homologar && !pubDgp.trim())} onClick={enviar}>{homologar ? (bloq ? 'Registrar e homologar com exceção' : 'Registrar e homologar') : 'Registrar para homologar depois'}</Botao></>}>
       <div className="form-grade">
         <Campo rotulo="Tipo *" largura="meia">
           <select value={tipo} onChange={(e) => { setTipo(e.target.value); setNovos([]); setMotivo(''); }}>
@@ -572,7 +637,9 @@ function EditorReprogramacao({ pessoa, exercicio, periodos, onFechar, onFeito }:
           <input type="date" value={req} onChange={(e) => setReq(e.target.value)} /></Campo>}
         <Campo rotulo="Processo SEI *"><input value={sei} onChange={(e) => setSei(e.target.value)} placeholder="3900000000.000000/2026-00" /></Campo>
         <Campo rotulo="Publicação do deferimento pela OME" dica="BGE/BI (art. 14, II, c)"><input value={pub} onChange={(e) => setPub(e.target.value)} /></Campo>
+        {gestaoGlobal && <Campo rotulo={homologar ? 'Publicação da homologação (BGE) *' : 'Publicação da homologação'} dica="Art. 13, II"><input value={pubDgp} disabled={!homologar} onChange={(e) => setPubDgp(e.target.value)} placeholder="BGE nº 000/2026" /></Campo>}
       </div>
+      {gestaoGlobal && <label className="check"><input type="checkbox" checked={homologar} onChange={(e) => setHomologar(e.target.checked)} /> Homologar agora (a DGP registra e homologa no mesmo passo)</label>}
       {interrupcao ? (
         <div className="form-grade">
           <Campo rotulo="Período interrompido" largura="meia">
@@ -861,29 +928,6 @@ function Exercicios({ exercicios }: { exercicios: any[] }) {
   </>;
 }
 
-function ExportarRelacao({ exercicio, pessoas, periodos, onFechar }: { exercicio: any; pessoas: Pessoa[]; periodos: Periodo[]; onFechar: () => void }) {
-  const [gerando, setGerando] = useState(false);
-  const linhas = useMemo(() => {
-    const por = new Map<string, Periodo[]>(); periodos.forEach((p) => { if (!por.has(p.pessoa_id)) por.set(p.pessoa_id, []); por.get(p.pessoa_id)!.push(p); });
-    return pessoas.map((p) => ({ ...p, ps: (por.get(p.id) || []).sort((a, b) => a.data_inicio.localeCompare(b.data_inicio)) }));
-  }, [pessoas, periodos]);
-  const cols = [
-    { titulo: 'Posto/Grad.', valor: (r: any) => r.posto_completo, largura: 12 }, { titulo: 'Matrícula', valor: (r: any) => r.matricula, largura: 11 },
-    { titulo: 'Nome', valor: (r: any) => r.nome, largura: 40 }, { titulo: 'OME', valor: (r: any) => r.ome_sigla, largura: 10 },
-    { titulo: '1º período', valor: (r: any) => (r.ps[0] ? `${fmtData(r.ps[0].data_inicio)} a ${fmtData(r.ps[0].data_fim)}` : ''), largura: 24 },
-    { titulo: '2º período', valor: (r: any) => (r.ps[1] ? `${fmtData(r.ps[1].data_inicio)} a ${fmtData(r.ps[1].data_fim)}` : ''), largura: 24 },
-    { titulo: 'Dias', valor: (r: any) => r.ps.reduce((s: number, p: any) => s + diasEfetivos(p), 0), largura: 6 },
-  ];
-  return (
-    <Modal aberto titulo={`Relação do PAF ${exercicio.ano}`} onFechar={onFechar}
-      rodape={<><Botao onClick={onFechar}>Cancelar</Botao>
-        <Botao disabled={gerando} onClick={async () => { setGerando(true); await exportarPdf(`paf_${exercicio.ano}`, `Plano Anual de Férias ${exercicio.ano}`, `${linhas.length} militar(es)/servidor(es)`, cols, linhas, (r: any) => r.ome_sigla); setGerando(false); onFechar(); }}>PDF</Botao>
-        <Botao variante="primario" disabled={gerando} onClick={async () => { setGerando(true); await exportarXlsx(`paf_${exercicio.ano}`, `Plano Anual de Férias ${exercicio.ano}`, cols, linhas, (r: any) => r.ome_sigla); setGerando(false); onFechar(); }}>Excel</Botao></>}>
-      <p>Relação por OME, em ordem de antiguidade, com os períodos programados ou propostos do exercício: base para a publicação no BGE.</p>
-    </Modal>
-  );
-}
-
 // ======================================================================= importação (DGP)
 function Importar() {
   const dom = useDominios();
@@ -1014,13 +1058,24 @@ export function FeriasMilitar({ pessoa }: { pessoa: { militar_id?: string; civil
   const col = pessoa.militar_id ? 'militar_id' : 'civil_id';
   const id = pessoa.militar_id || pessoa.civil_id;
   const nav = useNavigate();
+  const { gestaoGlobal } = useAuth();
+  const exercicios = useExercicios();
+  const [aberta, setAberta] = useState<Pessoa | null>(null);
+  const abrir = async () => {
+    const { data } = pessoa.militar_id
+      ? await supabase.from('v_militar').select('id,matricula,nome,nome_guerra,posto_completo,posto_ordem,ordem_antiguidade,ome_id,ome_sigla').eq('id', id).maybeSingle()
+      : await supabase.from('servidor_civil').select('id,matricula,nome,ome_id').eq('id', id).maybeSingle();
+    if (data) setAberta({ ...(data as any), tipo: pessoa.militar_id ? 'MILITAR' : 'CIVIL', posto_completo: (data as any).posto_completo || 'Civil', posto_ordem: (data as any).posto_ordem ?? 99, ordem_antiguidade: (data as any).ordem_antiguidade ?? null, ome_sigla: (data as any).ome_sigla || '' });
+  };
+  const exAtual = exercicios.dados?.find((e: any) => e.ano === anoAtualGozo()) || exercicios.dados?.[0];
   const lista = useConsulta(`ferias|ficha|${id}`, async () => { const { data, error } = await supabase.from('v_ferias').select('*').eq(col, id).order('data_inicio', { ascending: false }); if (error) throw error; return data || []; }, 15_000);
   if (lista.erro) return <Aviso tom="erro">{lista.erro}</Aviso>;
   if (!lista.dados) return <Carregando />;
   const exs = [...new Set<number>(lista.dados.map((p: any) => p.exercicio))].sort((a, b) => b - a);
   return (
     <div className="cartao"><div className="cartao-corpo">
-      <div className="exp-cab"><p className="nota">Férias pelo PAF (Portaria 312). Para lançar ou reprogramar, use o quadro de férias.</p><Botao pequeno onClick={() => nav('/ferias?aba=quadro')}>Abrir quadro de férias</Botao></div>
+      <div className="exp-cab"><p className="nota">Férias pelo PAF (Portaria 312).{gestaoGlobal ? '' : ' Lançadas e alteradas pela DGP.'}</p>
+        <span className="acoes">{gestaoGlobal && exAtual && <Botao pequeno variante="primario" onClick={abrir}>Incluir / reprogramar férias</Botao>}<Botao pequeno onClick={() => nav('/ferias?aba=quadro')}>Abrir quadro de férias</Botao></span></div>
       {!exs.length ? <Vazio>Nenhum período de férias registrado.</Vazio> : exs.map((e) => {
         const ps = lista.dados!.filter((p: any) => p.exercicio === e);
         const d = ps.filter(ativo).reduce((s: number, p: any) => s + diasEfetivos(p), 0);
@@ -1034,6 +1089,7 @@ export function FeriasMilitar({ pessoa }: { pessoa: { militar_id?: string; civil
           ]} />
         </div>;
       })}
+      {aberta && exAtual && <PessoaFerias pessoa={aberta} exercicio={exAtual} editavel={gestaoGlobal} onFechar={() => { setAberta(null); lista.recarregar(); }} />}
     </div></div>
   );
 }
